@@ -1,0 +1,9 @@
+torch==2.4.0
+pandas==2.2.2
+tqdm
+wandb
+torchvision==0.19.0
+torch-geometric==2.6.1
+matplotlib
+torchsummary
+statannotations
