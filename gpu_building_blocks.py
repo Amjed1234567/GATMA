@@ -190,9 +190,10 @@ class MVFeedforwardBlock(nn.Module):
         self.norm = MVLayerNorm()
         self.linear1 = MVLinear()
         self.gelu = MVGatedGelu()
-        self.bilinear = MVGeometricBilinear()
-        # Because we concatenated (len(constants.components) + len(constants.components))
-        self.linear2 = nn.Linear(2*len(constants.components), len(constants.components)) 
+        self.bilinear = MVGeometricBilinear()        
+        # With two grade-wise equivariant maps:
+        self.linear2_gp   = MVLinear()  # For the geometric product half
+        self.linear2_join = MVLinear()  # For the equivariant join half
         self.dropout = nn.Dropout(0.1)
         
     def forward(self, x):
@@ -204,11 +205,12 @@ class MVFeedforwardBlock(nn.Module):
         # Pass original + gated into bilinear interaction
         x_bilinear = self.bilinear(x_norm, x_gated, x_norm)
 
-        x_bilinear = x_bilinear.to(self.linear2.weight.device)
-        #print("x_bilinear device:", x_bilinear.device)
-        #print("linear2 weight device:", self.linear2.weight.device)
+        n = len(constants.components)  # 16
+        gp_part   = x_bilinear[..., :n]
+        join_part = x_bilinear[..., n:]
 
-        x_out = self.linear2(x_bilinear)
+        # Apply grade-wise linear per half and sum
+        x_out = self.linear2_gp(gp_part) + self.linear2_join(join_part)
 
         x_out = self.dropout(x_out)
 
