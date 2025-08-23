@@ -20,6 +20,7 @@ print("Using device:", device)
 # -------------------------
 # Encoding
 # -------------------------
+
 def atom_to_multivector(position, atomic_number):
     mv = torch.zeros(16)
     mv[constants.components.index('e0e1e2')] = position[0]
@@ -72,7 +73,7 @@ class MVQM9Data(torch.utils.data.Dataset):
 # -------------------------
 # Model & dataset init
 # -------------------------
-model = MVTransformer(num_layers=5, num_heads=8)
+model = MVTransformer(num_layers=5, num_heads=8, channels_per_atom=3)
 full_dataset = MVQM9Data()
 
 print(f"Full QM9 size reported by wrapper: {len(full_dataset)}")  # should be 130,831
@@ -154,6 +155,18 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=1e-2)
 
 
 # -------------------------
+# Padding, pooling and masking - Because some atoms are just zeros.
+# -------------------------
+def pooled_pred(outputs, inputs, model):
+    mask = (inputs.abs().sum(dim=2) > 0).float()         # [B,N]
+    if getattr(model, "channels_per_atom", 1) > 1:
+        mask = mask.repeat_interleave(model.channels_per_atom, dim=1)  # [B,N*n]
+    atom_feats = outputs[:, :, 0]                         # [B,N or N*n]
+    sum_mask = mask.sum(dim=1).clamp_min(1.0)
+    return (atom_feats * mask).sum(dim=1) / sum_mask
+
+
+# -------------------------
 # Eval helper
 # -------------------------
 @torch.no_grad()
@@ -165,6 +178,7 @@ def evaluate(model, loader, criterion):
         inputs = inputs.to(device, non_blocking=True)
         targets = targets.to(device).view(-1).to(torch.float32)
         outputs = model(inputs)                     # [B, max_atoms, ...]
+        """
         # build mask from inputs (padded rows are all zeros)
         mask = (inputs.abs().sum(dim=2) > 0).float()   # [B, max_atoms]
         atom_feats = outputs[:, :, 0]                  # [B, max_atoms]
@@ -172,8 +186,11 @@ def evaluate(model, loader, criterion):
         # masked mean (safe divide)
         sum_mask = mask.sum(dim=1).clamp_min(1.0)
         preds = (atom_feats * mask).sum(dim=1) / sum_mask
+        """
+        preds = pooled_pred(outputs, inputs, model)
         # convert preds back to original scale before computing MSE
         preds_unscaled = preds
+        
         loss = criterion(preds_unscaled, targets)
 
         total_loss += loss.item()
@@ -215,13 +232,17 @@ def train(model, train_loader, val_loader, criterion, optimizer, num_epochs=20, 
 
             optimizer.zero_grad(set_to_none=True)
             outputs = model(inputs)
+            """
             # build mask from inputs (padded rows are all zeros)
             mask = (inputs.abs().sum(dim=2) > 0).float()   # [B, max_atoms]
             atom_feats = outputs[:, :, 0]                  # [B, max_atoms]
 
             # masked mean (safe divide)
             sum_mask = mask.sum(dim=1).clamp_min(1.0)
+            
             preds = (atom_feats * mask).sum(dim=1) / sum_mask
+            """
+            preds = pooled_pred(outputs, inputs, model)
 
             # preds is still in *raw* scale: we predict raw then normalize for loss
             norm_targets = (targets - y_mean) / y_std

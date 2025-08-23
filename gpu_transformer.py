@@ -1,13 +1,14 @@
 import torch
 import torch.nn as nn
 from gpu_building_blocks import (
-    MVLayerNorm, MVMultiHeadAttention, MVFeedforwardBlock
+    MVLayerNorm, MVMultiHeadAttention, MVFeedforwardBlock, MVLinear
 )
-import constants
-from multivector import Multivector
 
+# -------------------------
+# Transformer Block 
+# -------------------------
 class MVTransformerBlock(nn.Module):
-    def __init__(self, num_heads):
+    def __init__(self, num_heads: int):
         super().__init__()
         self.norm1 = MVLayerNorm()
         self.attn = MVMultiHeadAttention(num_heads)
@@ -15,39 +16,63 @@ class MVTransformerBlock(nn.Module):
         self.ff = MVFeedforwardBlock()
 
     def forward(self, x):
-        # Attention block with residual
-        x_res = x
+        # Attention + residual
+        res = x
         x = self.norm1(x)
         x = self.attn(x)
-        x = x + x_res
+        x = x + res
 
-        # Feedforward block with residual
-        x_res = x
+        # Feedforward + residual
+        res = x
         x = self.norm2(x)
         x = self.ff(x)
-        x = x + x_res
-
+        x = x + res
         return x
 
-
-class MVTransformer(nn.Module):
-    def __init__(self, num_layers, num_heads):
-        """
-        Args:
-            num_layers (int): Number of transformer blocks.
-            num_heads (int): Number of heads in multi-head attention.
-        """
+# -------------------------
+# Multiple tokens (multivectors) per atom (n channels per atom)
+# -------------------------
+class MVTokenExpander(nn.Module):
+    def __init__(self, channels: int):
         super().__init__()
+        assert channels >= 1
+        self.channels = channels
+        # Each channel has its own equivariant projector
+        self.projs = nn.ModuleList([MVLinear() for _ in range(channels)])
+
+    def forward(self, x):  # x: [B, N, 16]
+        if self.channels == 1:
+            return x
+        outs = [proj(x) for proj in self.projs]   # list of [B, N, 16]
+        return torch.cat(outs, dim=1)             # [B, N*n_slots, 16]
+
+# -------------------------
+# Transformer (stack of blocks + expander)
+# -------------------------
+class MVTransformer(nn.Module):
+    def __init__(self, num_layers: int, num_heads: int, channels_per_atom: int = 1):
+        super().__init__()
+        self.channels_per_atom = channels_per_atom
+        self.expander = MVTokenExpander(channels_per_atom) if channels_per_atom > 1 else None
         self.layers = nn.ModuleList([MVTransformerBlock(num_heads) for _ in range(num_layers)])
 
-    def forward(self, x):
-        """
-        Args:
-            x (torch.tensor): Shape (batch_size, num_tokens, len(constants.components))
-        
-        Returns:
-            torch.tensor: Shape (batch_size, num_tokens, len(constants.components))
-        """
+    def forward(self, x):  # x: [B, N, 16]
+        if self.expander is not None:
+            x = self.expander(x)  # [B, N*channels_per_atom, 16]
         for layer in self.layers:
             x = layer(x)
         return x
+"""
+# -------------------------
+# Run file directly: quick shape check
+# -------------------------
+if __name__ == "__main__":
+    mvt = MVTransformer(num_layers=3, num_heads=2, channels_per_atom=3)
+    print(mvt)
+
+    B, N = 2, 5
+    x = torch.randn(B, N, 16)
+    y = mvt(x)
+    print("in :", x.shape)
+    print("out:", y.shape)  # expect [2, 5*3, 16]
+"""
