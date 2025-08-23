@@ -73,7 +73,7 @@ class MVQM9Data(torch.utils.data.Dataset):
 # -------------------------
 # Model & dataset init
 # -------------------------
-model = MVTransformer(num_layers=5, num_heads=8, channels_per_atom=3)
+model = MVTransformer(num_layers=3, num_heads=3, channels_per_atom=3)
 full_dataset = MVQM9Data()
 
 print(f"Full QM9 size reported by wrapper: {len(full_dataset)}")  # should be 130,831
@@ -151,7 +151,7 @@ print(f"y_mean={y_mean.item():.6f}, y_std={y_std.item():.6f}")
 # -------------------------
 criterion = nn.L1Loss() # This is the MAE. 
 #criterion = nn.MSELoss()
-optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=1e-2)
+optimizer = torch.optim.AdamW(model.parameters(), lr=5e-3, weight_decay=1e-2)
 
 
 # -------------------------
@@ -292,7 +292,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, num_epochs=20, 
             torch.save(model.state_dict(), ckpt_path)
             wandb.log({"model/best_val": best_val})
 
-"""
+
 # >>> QUICK 1 EPOCH SANITY RUN WITH TIMING (TEMPORARY) <<<
 import time
 
@@ -321,7 +321,7 @@ avg_loss = running_loss / max(len(train_loader), 1)
 
 print(f"[Sanity check] Epoch time: {epoch_time:.2f} sec | Avg loss: {avg_loss:.6f}")
 # >>> END PROBE BLOCK <<<
-"""
+
 
 # -------------------------
 # Run training, then test
