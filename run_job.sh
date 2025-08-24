@@ -23,7 +23,7 @@
 echo "Running script..."
 module load cuda/11.8
 module load python3/3.10.13
-source /zhome/b5/8/132309/Master/venv/bin/activate
+source /zhome/b5/8/132309/GATMA/venv/bin/activate
 
 ### Authenticate wandb
 export WANDB_API_KEY=a916b1f26e04fa87565fd5a12282d2b28fede3df
