@@ -44,7 +44,7 @@ class MVTokenExpander(nn.Module):
         if self.channels == 1:
             return x
         outs = [proj(x) for proj in self.projs]   # list of [B, N, 16]
-        return torch.cat(outs, dim=1)             # [B, N*n_slots, 16]
+        return torch.cat(outs, dim=1)             # [B, N*channels, 16]
 
 # -------------------------
 # Transformer (stack of blocks + expander)
