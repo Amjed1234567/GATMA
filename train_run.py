@@ -73,7 +73,7 @@ class MVQM9Data(torch.utils.data.Dataset):
 # -------------------------
 # Model & dataset init
 # -------------------------
-model = MVTransformer(num_layers=5, num_heads=3, channels_per_atom=16)
+model = MVTransformer(num_layers=5, num_heads=3, channels_per_atom=64)
 full_dataset = MVQM9Data()
 
 print(f"Full QM9 size reported by wrapper: {len(full_dataset)}")  # should be 130,831

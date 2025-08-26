@@ -14,7 +14,7 @@
 #BSUB -R "rusage[mem=10GB]"
 
 ### set walltime limit: hh:mm --
-#BSUB -W 23:30
+#BSUB -W 23:59
 
 ### added outputs and errors to files
 #BSUB -o outputs/Output_%J.out
