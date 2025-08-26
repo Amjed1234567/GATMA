@@ -99,8 +99,8 @@ print(f"Train: {len(train_set)}  Val: {len(val_set)}  Test: {len(test_set)}")
 # -------------------------
 BATCH_SIZE = 100
 NUM_WORKERS = 4
-PIN = True
-PERSIST = True
+PIN = (device.type == 'cuda')
+PERSIST = PIN and NUM_WORKERS > 0
 
 train_loader = DataLoader(
     train_set,

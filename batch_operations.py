@@ -7,7 +7,19 @@ import constants
 from multivector import Multivector
 
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+#device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+# <<<<<<  >>>>>>>
+# This is just to “mirror” a constant to the inputs’ device (and cache it).
+_cached = {}
+
+def _on_device(t_cpu: torch.Tensor, dev):
+    key = (id(t_cpu), dev)
+    if key not in _cached:
+        _cached[key] = t_cpu.to(dev)
+    
+    return _cached[key]
+# <<<<<<  >>>>>>>
 
 
 def build_geometric_product_tensor():
@@ -43,10 +55,12 @@ def build_geometric_product_tensor():
             elif product in constants.components:
                 k = constants.components.index(product)
                 G[i, j, k] = sign
+    
     return G
 
 # Shape: (len(constants.components), len(constants.components), len(constants.components))).
-GEOMETRIC_PRODUCT_TENSOR = build_geometric_product_tensor().to(device)
+#GEOMETRIC_PRODUCT_TENSOR = build_geometric_product_tensor().to(device)
+GEOMETRIC_PRODUCT_TENSOR = build_geometric_product_tensor()  # stay on CPU
 
 
 def geometric_product_batch(x, y):
@@ -63,9 +77,9 @@ def geometric_product_batch(x, y):
     # Shape: (batch_size, num_tokens, len(constants.components), len(constants.components))  
     xy_ij = x_i * y_j      
 
-    result = torch.einsum('btij,ijk->btk', xy_ij, GEOMETRIC_PRODUCT_TENSOR)
+    G = _on_device(GEOMETRIC_PRODUCT_TENSOR, x.device)
     
-    return result
+    return torch.einsum('btij,ijk->btk', xy_ij, G)
 
 
 def build_dual_matrix():
@@ -85,10 +99,12 @@ def build_dual_matrix():
             sign = 1
         j = constants.components.index(b)
         dual_mat[i, j] = sign
+    
     return dual_mat 
 
 
-DUAL_MATRIX = build_dual_matrix().to(device)
+#DUAL_MATRIX = build_dual_matrix().to(device)
+DUAL_MATRIX = build_dual_matrix()                # stay on CPU
 
 
 def dual_batch(x):
@@ -98,7 +114,9 @@ def dual_batch(x):
     Returns:
         dual(x): tensor of shape (batch, num_tokens, len(constants.components))
     """
-    return torch.matmul(x, DUAL_MATRIX)  
+    D = _on_device(DUAL_MATRIX, x.device)
+    
+    return torch.matmul(x, D)
 
 
 def build_outer_mask():
@@ -144,7 +162,8 @@ def build_outer_mask():
     return outer_mask
 
 
-OUTER_MASK = build_outer_mask().to(device)
+#OUTER_MASK = build_outer_mask().to(device)
+OUTER_MASK = build_outer_mask()                 # stay on CPU
 
 
 def outer_product_batch(x, y):
@@ -159,9 +178,9 @@ def outer_product_batch(x, y):
     x_i = x.unsqueeze(-1)
     y_j = y.unsqueeze(-2)
     xy_ij = x_i * y_j
-    result = torch.einsum('btij,ijk->btk', xy_ij, OUTER_MASK)
+    M = _on_device(OUTER_MASK, x.device)
     
-    return result
+    return torch.einsum('btij,ijk->btk', xy_ij, M)
 
 
 def join_batch(x, y):
@@ -171,14 +190,15 @@ def join_batch(x, y):
     Returns:
         Join(x, y): tensor of shape (batch_size, num_tokens, len(constants.components))
     """
-    x = x.to(DUAL_MATRIX.device)
-    y = y.to(DUAL_MATRIX.device)
+    #x = x.to(DUAL_MATRIX.device)
+    #y = y.to(DUAL_MATRIX.device)
     
-    x_dual = dual_batch(x)
-    y_dual = dual_batch(y)
-    outer = outer_product_batch(x_dual, y_dual)
+    #x_dual = dual_batch(x)
+    #y_dual = dual_batch(y)
+    #outer = outer_product_batch(x_dual, y_dual)
         
-    return dual_batch(outer)
+    #return dual_batch(outer)
+    return dual_batch(outer_product_batch(dual_batch(x), dual_batch(y)))
 
 
 
