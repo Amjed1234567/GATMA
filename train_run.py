@@ -177,35 +177,6 @@ def pooled_pred(outputs, inputs, model):
 # -------------------------
 # Eval helper
 # -------------------------
-"""
-@torch.no_grad()
-def evaluate(model, loader, criterion):
-    model.eval()
-    total_loss = 0.0
-    n_batches = 0
-    for inputs, targets in loader:
-        inputs = inputs.to(device, non_blocking=True)
-        targets = targets.to(device).view(-1).to(torch.float32)
-        outputs = model(inputs)                     # [B, max_atoms, ...]
-        """
-        # build mask from inputs (padded rows are all zeros)
-        #mask = (inputs.abs().sum(dim=2) > 0).float()   # [B, max_atoms]
-        #atom_feats = outputs[:, :, 0]                  # [B, max_atoms]
-
-        # masked mean (safe divide)
-        #sum_mask = mask.sum(dim=1).clamp_min(1.0)
-        #preds = (atom_feats * mask).sum(dim=1) / sum_mask
-"""
-        preds = pooled_pred(outputs, inputs, model)
-        # convert preds back to original scale before computing MSE
-        preds_unscaled = preds
-        
-        loss = criterion(preds_unscaled, targets)
-
-        total_loss += loss.item()
-        n_batches += 1
-    return total_loss / max(n_batches, 1)
-"""
 @torch.no_grad()
 def evaluate(model, loader, criterion):
     model.eval()
@@ -254,43 +225,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, num_epochs=20, 
     for epoch in range(1, num_epochs + 1):
         model.train()
         running = 0.0
-        """
-        for batch_idx, (inputs, targets) in enumerate(train_loader):
-            inputs = inputs.to(device, non_blocking=True)
-            targets = targets.to(device).view(-1).to(torch.float32)
-
-            optimizer.zero_grad(set_to_none=True)
-            outputs = model(inputs)
-            """
-        """
-            # build mask from inputs (padded rows are all zeros)
-            mask = (inputs.abs().sum(dim=2) > 0).float()   # [B, max_atoms]
-            atom_feats = outputs[:, :, 0]                  # [B, max_atoms]
-
-            # masked mean (safe divide)
-            sum_mask = mask.sum(dim=1).clamp_min(1.0)
-            
-            preds = (atom_feats * mask).sum(dim=1) / sum_mask
-        """
-        """
-            preds = pooled_pred(outputs, inputs, model)
-
-            # preds is still in *raw* scale: we predict raw then normalize for loss
-            norm_targets = (targets - y_mean) / y_std
-            norm_preds   = (preds - y_mean.to(device)) / y_std.to(device)
-            loss = criterion(norm_preds, norm_targets)
-
-            loss.backward()
-            optimizer.step()
-
-            running += loss.item()
-
-            wandb.log({
-                "train/batch_loss": loss.item(),
-                "epoch": epoch,
-                "batch": batch_idx,
-            })
-"""
+        
         for batch_idx, (inputs, targets) in enumerate(train_loader):
             inputs = inputs.to(device, non_blocking=True)
             targets = targets.to(device).view(-1).to(torch.float32)
@@ -367,13 +302,17 @@ for batch_idx, (inputs, targets) in enumerate(train_loader):
     targets = targets.to(device).view(-1).to(torch.float32)
 
     optimizer.zero_grad(set_to_none=True)
-    outputs = model(inputs)
-    preds = outputs[:, :, 0].sum(dim=1)
-    loss = criterion(preds, targets)
-    loss.backward()
-    optimizer.step()
+    with amp.autocast(device_type="cuda", enabled=use_amp, dtype=torch.float16):
+        outputs = model(inputs)
+        preds = outputs[:, :, 0].sum(dim=1) 
+        loss = criterion(preds, targets)
+
+    scaler.scale(loss).backward()
+    scaler.step(optimizer)
+    scaler.update()
 
     running_loss += loss.item()
+
 
 epoch_time = time.time() - start_time
 avg_loss = running_loss / max(len(train_loader), 1)
