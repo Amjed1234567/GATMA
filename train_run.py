@@ -292,7 +292,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, num_epochs=20, 
             torch.save(model.state_dict(), ckpt_path)
             wandb.log({"model/best_val": best_val})
 
-"""
+
 # >>> QUICK 1 EPOCH SANITY RUN WITH TIMING (TEMPORARY) <<<
 import time
 
@@ -321,7 +321,7 @@ avg_loss = running_loss / max(len(train_loader), 1)
 
 print(f"[Sanity check] Epoch time: {epoch_time:.2f} sec | Avg loss: {avg_loss:.6f}")
 # >>> END PROBE BLOCK <<<
-"""
+
 
 # -------------------------
 # Run training, then test
