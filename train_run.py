@@ -6,6 +6,7 @@ from gpu_transformer import MVTransformer
 import wandb
 from torch_geometric.datasets import QM9
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch import amp 
 
 from multivector import Multivector
 import constants
@@ -16,6 +17,11 @@ import constants
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(torch.__version__)
 print("Using device:", device)
+
+# From https://docs.pytorch.org/docs/stable/amp.html
+use_amp = (device.type == "cuda")
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 
 # -------------------------
 # Encoding
@@ -152,6 +158,8 @@ print(f"y_mean={y_mean.item():.6f}, y_std={y_std.item():.6f}")
 criterion = nn.L1Loss() # This is the MAE. 
 #criterion = nn.MSELoss()
 optimizer = torch.optim.AdamW(model.parameters(), lr=5e-3, weight_decay=1e-2)
+# From https://docs.pytorch.org/docs/stable/amp.html#gradient-scaling
+scaler = amp.GradScaler(device_type="cuda", enabled=use_amp)
 
 
 # -------------------------
@@ -169,6 +177,7 @@ def pooled_pred(outputs, inputs, model):
 # -------------------------
 # Eval helper
 # -------------------------
+"""
 @torch.no_grad()
 def evaluate(model, loader, criterion):
     model.eval()
@@ -180,18 +189,38 @@ def evaluate(model, loader, criterion):
         outputs = model(inputs)                     # [B, max_atoms, ...]
         """
         # build mask from inputs (padded rows are all zeros)
-        mask = (inputs.abs().sum(dim=2) > 0).float()   # [B, max_atoms]
-        atom_feats = outputs[:, :, 0]                  # [B, max_atoms]
+        #mask = (inputs.abs().sum(dim=2) > 0).float()   # [B, max_atoms]
+        #atom_feats = outputs[:, :, 0]                  # [B, max_atoms]
 
         # masked mean (safe divide)
-        sum_mask = mask.sum(dim=1).clamp_min(1.0)
-        preds = (atom_feats * mask).sum(dim=1) / sum_mask
-        """
+        #sum_mask = mask.sum(dim=1).clamp_min(1.0)
+        #preds = (atom_feats * mask).sum(dim=1) / sum_mask
+"""
         preds = pooled_pred(outputs, inputs, model)
         # convert preds back to original scale before computing MSE
         preds_unscaled = preds
         
         loss = criterion(preds_unscaled, targets)
+
+        total_loss += loss.item()
+        n_batches += 1
+    return total_loss / max(n_batches, 1)
+"""
+@torch.no_grad()
+def evaluate(model, loader, criterion):
+    model.eval()
+    total_loss = 0.0
+    n_batches = 0
+    for inputs, targets in loader:
+        inputs = inputs.to(device, non_blocking=True)
+        targets = targets.to(device).view(-1).to(torch.float32)
+
+        # Add autocast for eval
+        with amp.autocast(device_type="cuda", enabled=use_amp, dtype=torch.float16):
+            outputs = model(inputs)
+            preds = pooled_pred(outputs, inputs, model)
+            preds_unscaled = preds
+            loss = criterion(preds_unscaled, targets)
 
         total_loss += loss.item()
         n_batches += 1
@@ -225,7 +254,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, num_epochs=20, 
     for epoch in range(1, num_epochs + 1):
         model.train()
         running = 0.0
-
+        """
         for batch_idx, (inputs, targets) in enumerate(train_loader):
             inputs = inputs.to(device, non_blocking=True)
             targets = targets.to(device).view(-1).to(torch.float32)
@@ -233,6 +262,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, num_epochs=20, 
             optimizer.zero_grad(set_to_none=True)
             outputs = model(inputs)
             """
+        """
             # build mask from inputs (padded rows are all zeros)
             mask = (inputs.abs().sum(dim=2) > 0).float()   # [B, max_atoms]
             atom_feats = outputs[:, :, 0]                  # [B, max_atoms]
@@ -241,7 +271,8 @@ def train(model, train_loader, val_loader, criterion, optimizer, num_epochs=20, 
             sum_mask = mask.sum(dim=1).clamp_min(1.0)
             
             preds = (atom_feats * mask).sum(dim=1) / sum_mask
-            """
+        """
+        """
             preds = pooled_pred(outputs, inputs, model)
 
             # preds is still in *raw* scale: we predict raw then normalize for loss
@@ -259,7 +290,35 @@ def train(model, train_loader, val_loader, criterion, optimizer, num_epochs=20, 
                 "epoch": epoch,
                 "batch": batch_idx,
             })
+"""
+        for batch_idx, (inputs, targets) in enumerate(train_loader):
+            inputs = inputs.to(device, non_blocking=True)
+            targets = targets.to(device).view(-1).to(torch.float32)
 
+            optimizer.zero_grad(set_to_none=True)
+
+            # Forward & loss under autocast
+            with amp.autocast(device_type="cuda", enabled=use_amp, dtype=torch.float16):
+                outputs = model(inputs)
+                preds = pooled_pred(outputs, inputs, model)
+                norm_targets = (targets - y_mean) / y_std
+                norm_preds   = (preds - y_mean.to(device)) / y_std.to(device)
+                loss = criterion(norm_preds, norm_targets)
+
+            # Backprop & step via GradScaler (no-op on CPU)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+
+            running += loss.item()
+
+            wandb.log({
+                "train/batch_loss": loss.item(),
+                "epoch": epoch,
+                "batch": batch_idx,
+            })
+
+            
         train_loss = running / max(len(train_loader), 1)
         val_loss = evaluate(model, val_loader, criterion)
         
