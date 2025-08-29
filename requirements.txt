@@ -1,9 +1,21 @@
-torch==2.4.0
+# Core PyTorch stack (CUDA 11.8 build)
+torch==2.4.1
+torchvision==0.19.1
+torchaudio==2.4.1
+
+# Graph learning
+torch-geometric==2.6.1
+
+# Experiment tracking
+wandb
+
+# Data / utils
 pandas==2.2.2
 tqdm
-wandb
-torchvision==0.19.0
-torch-geometric==2.6.1
+
+# Visualization
 matplotlib
-torchsummary
 statannotations
+
+# Model inspection
+torchsummary
