@@ -79,7 +79,7 @@ class MVQM9Data(torch.utils.data.Dataset):
 # -------------------------
 # Model & dataset init
 # -------------------------
-model = MVTransformer(num_layers=3, num_heads=3, channels_per_atom=64)
+model = MVTransformer(num_layers=4, num_heads=3, channels_per_atom=64)
 full_dataset = MVQM9Data()
 
 print(f"Full QM9 size reported by wrapper: {len(full_dataset)}")  # should be 130,831
@@ -324,7 +324,7 @@ print(f"[Sanity check] Epoch time: {epoch_time:.2f} sec | Avg loss: {avg_loss:.6
 # -------------------------
 # Run training, then test
 # -------------------------
-train(model, train_loader, val_loader, criterion, optimizer, num_epochs=100, ckpt_path="best_model.pth")
+train(model, train_loader, val_loader, criterion, optimizer, num_epochs=95, ckpt_path="best_model.pth")
 
 # Load best checkpoint before testing (optional but recommended)
 if os.path.isfile("best_model.pth"):
