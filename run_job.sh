@@ -35,7 +35,7 @@ wandb --version
 
 cwdpath=$(pwd)
 #python3 "$cwdpath/gpu_run.py"
-python3 /zhome/b5/8/132309/GATMA/train_run.py
+python3 /zhome/b5/8/132309/GATMA/train.py
 
 # Attempt to sync wandb logs
 echo "Syncing Weights & Biases logs..."
