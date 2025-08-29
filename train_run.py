@@ -22,6 +22,30 @@ print("Using device:", device)
 use_amp = (device.type == "cuda")
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
+# -------- AMP compatibility helpers (PyTorch 1.10 → 2.4+) --------
+try:
+    from torch import amp as _amp
+
+    # Prefer the new API with explicit device type (2.4+)
+    try:
+        _scaler = _amp.GradScaler('cuda', enabled=use_amp)
+    except TypeError:
+        # Older 2.x that doesn't accept the device argument
+        _scaler = _amp.GradScaler(enabled=use_amp)
+
+    def autocast_ctx():
+        return _amp.autocast(device_type='cuda', enabled=use_amp, dtype=torch.float16)
+
+except Exception:
+    # Very old builds: fall back to the cuda.amp namespace
+    from torch.cuda import amp as _amp
+    _scaler = _amp.GradScaler(enabled=use_amp)
+
+    def autocast_ctx():
+        return _amp.autocast(enabled=use_amp, dtype=torch.float16)
+
+scaler = _scaler
+
 
 # -------------------------
 # Encoding
@@ -159,7 +183,7 @@ criterion = nn.L1Loss() # This is the MAE.
 #criterion = nn.MSELoss()
 optimizer = torch.optim.AdamW(model.parameters(), lr=5e-3, weight_decay=1e-2)
 # From https://docs.pytorch.org/docs/stable/amp.html#gradient-scaling
-scaler = amp.GradScaler(device_type="cuda", enabled=use_amp)
+#scaler = amp.GradScaler(device_type="cuda", enabled=use_amp)
 
 
 # -------------------------
@@ -187,7 +211,7 @@ def evaluate(model, loader, criterion):
         targets = targets.to(device).view(-1).to(torch.float32)
 
         # Add autocast for eval
-        with amp.autocast(device_type="cuda", enabled=use_amp, dtype=torch.float16):
+        with autocast_ctx():
             outputs = model(inputs)
             preds = pooled_pred(outputs, inputs, model)
             preds_unscaled = preds
@@ -233,7 +257,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, num_epochs=20, 
             optimizer.zero_grad(set_to_none=True)
 
             # Forward & loss under autocast
-            with amp.autocast(device_type="cuda", enabled=use_amp, dtype=torch.float16):
+            with autocast_ctx():
                 outputs = model(inputs)
                 preds = pooled_pred(outputs, inputs, model)
                 norm_targets = (targets - y_mean) / y_std
@@ -302,7 +326,7 @@ for batch_idx, (inputs, targets) in enumerate(train_loader):
     targets = targets.to(device).view(-1).to(torch.float32)
 
     optimizer.zero_grad(set_to_none=True)
-    with amp.autocast(device_type="cuda", enabled=use_amp, dtype=torch.float16):
+    with autocast_ctx():
         outputs = model(inputs)
         preds = outputs[:, :, 0].sum(dim=1) 
         loss = criterion(preds, targets)
