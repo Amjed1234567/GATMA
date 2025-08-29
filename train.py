@@ -7,8 +7,6 @@ import wandb
 from torch_geometric.datasets import QM9
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch import amp 
-
-from multivector import Multivector
 import constants
 
 # -------------------------
@@ -22,6 +20,7 @@ print("Using device:", device)
 use_amp = (device.type == "cuda")
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
+torch.set_float32_matmul_precision("high")
 
 # -------------------------
 # Encoding
@@ -77,7 +76,7 @@ class MVQM9Data(torch.utils.data.Dataset):
 
 
 # From https://docs.pytorch.org/docs/stable/amp.html#gradient-scaling
-scaler = amp.GradScaler(device_type="cuda", enabled=use_amp)
+scaler = amp.GradScaler('cuda', enabled=use_amp)
 
 
 # -------------------------
@@ -98,22 +97,30 @@ def pooled_pred(outputs, inputs, model):
 @torch.no_grad()
 def evaluate(model, loader, criterion):
     model.eval()
-    total_loss = 0.0
+    total_mae = 0.0
+    total_norm = 0.0
     n_batches = 0
     for inputs, targets in loader:
-        inputs = inputs.to(device, non_blocking=True)
+        inputs  = inputs.to(device, non_blocking=True)
         targets = targets.to(device).view(-1).to(torch.float32)
 
-        # Add autocast for eval
-        with amp.autocast(device_type="cuda", enabled=use_amp, dtype=torch.float16):
+        with amp.autocast('cuda', enabled=use_amp, dtype=torch.bfloat16):
             outputs = model(inputs)
-            preds = pooled_pred(outputs, inputs, model)
-            preds_unscaled = preds
-            loss = criterion(preds_unscaled, targets)
+            preds   = pooled_pred(outputs, inputs, model)
 
-        total_loss += loss.item()
-        n_batches += 1
-    return total_loss / max(n_batches, 1)
+        # Unnormalized MAE (human-readable)
+        mae  = criterion(preds, targets).item()
+
+        # Normalized L1 (matches training scale)
+        norm_targets = (targets - y_mean) / y_std
+        norm_preds   = (preds   - y_mean.to(device)) / y_std.to(device)
+        norm = criterion(norm_preds, norm_targets).item()
+
+        total_mae  += mae
+        total_norm += norm
+        n_batches  += 1
+
+    return (total_mae / max(n_batches, 1), total_norm / max(n_batches, 1))
 
 
 # -------------------------
@@ -151,7 +158,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, num_epochs=20, 
             optimizer.zero_grad(set_to_none=True)
 
             # Forward & loss under autocast
-            with amp.autocast(device_type="cuda", enabled=use_amp, dtype=torch.float16):
+            with amp.autocast('cuda', enabled=use_amp, dtype=torch.bfloat16):
                 outputs = model(inputs)
                 preds = pooled_pred(outputs, inputs, model)
                 norm_targets = (targets - y_mean) / y_std
@@ -170,39 +177,36 @@ def train(model, train_loader, val_loader, criterion, optimizer, num_epochs=20, 
                 "epoch": epoch,
                 "batch": batch_idx,
             })
-
-            
+                        
         train_loss = running / max(len(train_loader), 1)
-        val_loss = evaluate(model, val_loader, criterion)
-        
-        # --- EMA of validation loss for LR scheduling (alpha = 0.9) ---
-        if ema_val is None:
-            ema_val = val_loss
-        else:
-            ema_val = ema_alpha * ema_val + (1.0 - ema_alpha) * val_loss
 
-        # Step the scheduler using the EMA-smoothed validation loss
+        val_mae, val_norm = evaluate(model, val_loader, criterion)
+
+        # scheduler on normalized (consistent scale)
+        if ema_val is None:
+            ema_val = val_norm
+        else:
+            ema_val = ema_alpha * ema_val + (1.0 - ema_alpha) * val_norm
         scheduler.step(ema_val)
 
-        # Report both raw and EMA val losses + current LR
-        current_lr = scheduler.get_last_lr()[0]  # list -> float
-        print(f"Epoch {epoch:03d} | train_loss={train_loss:.6f} | val_loss={val_loss:.6f} | "
-            f"val_ema={ema_val:.6f} | lr={current_lr:.6e}")
+        current_lr = scheduler.get_last_lr()[0]
+        print(f"Epoch {epoch:03d} | train_norm={train_loss:.6f} | val_mae={val_mae:.6f} | "
+            f"val_norm={val_norm:.6f} | val_norm_ema={ema_val:.6f} | lr={current_lr:.6e}")
 
         wandb.log({
-            "train/epoch_loss": train_loss,
-            "val/epoch_loss": val_loss,
-            "val/epoch_loss_ema": ema_val,
+            "train/epoch_norm": train_loss,
+            "val/epoch_mae": val_mae,
+            "val/epoch_norm": val_norm,
+            "val/epoch_norm_ema": ema_val,
             "lr": current_lr,
             "epoch": epoch
         })
 
-
-        # save best checkpoint
-        if val_loss < best_val:
-            best_val = val_loss
-            torch.save(model.state_dict(), ckpt_path)
-            wandb.log({"model/best_val": best_val})
+    # save best checkpoint
+    if val_mae < best_val:
+        best_val = val_mae
+        torch.save(model.state_dict(), ckpt_path)
+        wandb.log({"model/best_val": best_val})
 
 
 def main():
@@ -261,9 +265,9 @@ def main():
         inputs = inputs.to(device, non_blocking=True)
         targets = targets.to(device).view(-1).to(torch.float32)
         optimizer.zero_grad(set_to_none=True)
-        with amp.autocast(device_type="cuda", enabled=use_amp, dtype=torch.float16):
+        with amp.autocast('cuda', enabled=use_amp, dtype=torch.bfloat16):
             outputs = model(inputs)
-            preds = outputs[:, :, 0].sum(dim=1)
+            preds = pooled_pred(outputs, inputs, model)
             loss = criterion(preds, targets)
         scaler.scale(loss).backward()
         scaler.step(optimizer)
