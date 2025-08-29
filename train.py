@@ -167,6 +167,9 @@ def train(model, train_loader, val_loader, criterion, optimizer, num_epochs=20, 
 
             # Backprop & step via GradScaler (no-op on CPU)
             scaler.scale(loss).backward()
+            # --- Gradient clipping ---
+            scaler.unscale_(optimizer)  # unscale before clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
 
@@ -229,15 +232,20 @@ def main():
     PERSIST = PIN and NUM_WORKERS > 0
     train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True,
                               num_workers=NUM_WORKERS, pin_memory=PIN,
-                              persistent_workers=PERSIST if NUM_WORKERS > 0 else False)
+                              persistent_workers=PERSIST if NUM_WORKERS > 0 else False,
+                              drop_last=True)
     val_loader   = DataLoader(val_set,   batch_size=BATCH_SIZE, shuffle=False,
                               num_workers=NUM_WORKERS, pin_memory=PIN,
                               persistent_workers=PERSIST if NUM_WORKERS > 0 else False)
     test_loader  = DataLoader(test_set,  batch_size=BATCH_SIZE, shuffle=False,
                               num_workers=NUM_WORKERS, pin_memory=PIN,
                               persistent_workers=PERSIST if NUM_WORKERS > 0 else False)
-    print(f"Steps per epoch (train): {(len(train_set) + BATCH_SIZE - 1)//BATCH_SIZE}, batch_size={BATCH_SIZE}")
+    #print(f"Steps per epoch (train): {(len(train_set) + BATCH_SIZE - 1)//BATCH_SIZE}, batch_size={BATCH_SIZE}")
+    # This is used if drop_last=True.
+    steps_per_epoch = len(train_set) // BATCH_SIZE
+    print(f"Steps per epoch (train): {steps_per_epoch}, batch_size={BATCH_SIZE}")
 
+    
     # Normalization (compute on CPU, no workers)
     with torch.no_grad():
         ys = []
@@ -270,9 +278,11 @@ def main():
             preds = pooled_pred(outputs, inputs, model)
             loss = criterion(preds, targets)
         scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         scaler.step(optimizer)
         scaler.update()
-        running_loss += loss.item()
+
     epoch_time = time.time() - start_time
     avg_loss = running_loss / max(len(train_loader), 1)
     print(f"[Sanity check] Epoch time: {epoch_time:.2f} sec | Avg loss: {avg_loss:.6f}")
