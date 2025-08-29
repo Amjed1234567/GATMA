@@ -284,7 +284,7 @@ def main():
     torch.save(model.state_dict(), 'gatma_model_final.pth')
 
 if __name__ == "__main__":
-    # (Optional) On some clusters it helps to be explicit:
-    # import torch.multiprocessing as mp
-    # mp.set_start_method("spawn", force=True)
+    # From https://docs.pytorch.org/docs/stable/multiprocessing.html
+    import torch.multiprocessing as mp
+    mp.set_start_method("spawn", force=True)
     main()
