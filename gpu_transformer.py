@@ -37,14 +37,15 @@ class MVTokenExpander(nn.Module):
         super().__init__()
         assert channels >= 1
         self.channels = channels
-        # Each channel has its own equivariant projector
-        self.projs = nn.ModuleList([MVLinear() for _ in range(channels)])
+        # Single MVLinear expands 1 → channels
+        self.proj = MVLinear(in_channels=1, out_channels=channels)
 
     def forward(self, x):  # x: [B, N, 16]
         if self.channels == 1:
             return x
-        outs = [proj(x) for proj in self.projs]   # list of [B, N, 16]
-        return torch.cat(outs, dim=1)             # [B, N*channels, 16]
+        y = self.proj(x)                 # [B, N, channels, 16]
+        B, N, C, D = y.shape
+        return y.reshape(B, N * C, D)    # [B, N*channels, 16]
 
 # -------------------------
 # Transformer (stack of blocks + expander)
