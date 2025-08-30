@@ -7,36 +7,51 @@ from batch_operations import geometric_product_batch, equi_join_batch
 
 # This is the linear layer.
 class MVLinear(nn.Module):
-    def __init__(self, in_features=None, out_features=None):
-        
+    def __init__(self, in_channels: int = 1, out_channels: int = 1):
         super().__init__()
-        
-        # Initializing w and v parameters with random numbers.
-        self.w = nn.Parameter(torch.randn(5))
-        self.v = nn.Parameter(torch.randn(4))
-        # This is a scalar term to ensure equivariance. 
-        self.scalar_bias = nn.Parameter(torch.zeros(1))  
-        
-        # Fixed parameters. Will not change during training. 
-        self.register_buffer("grade_masks", constants.grade_masks)
-        self.register_buffer("e0_geometric_products", constants.e0_geometric_products)
-        
-    def forward(self, x):
-        """ 
-        Args:
-            x (torch.tensor): Shape: (batch_size, num_tokens, len(constants.components))
+        self.in_channels  = in_channels
+        self.out_channels = out_channels
 
-        Returns:
-            torch.tensor: Shape: (batch_size, num_tokens, len(constants.components))
-        """           
-        first_sum = sum(self.w[i] * (self.grade_masks[i] * x) for i in range(5))
-        # In all the multivectors in all batches select the scalar component. 
-        first_sum[:, :, 0] += self.scalar_bias
-            
-        second_sum = sum(self.v[j] * (self.grade_masks[j] * x @ self.e0_geometric_products.T)
-                                        for j in range(4))      
-            
-        return first_sum + second_sum      
+        # One small [Cout x Cin] matrix per equivariant coefficient
+        self.w = nn.Parameter(torch.randn(out_channels, in_channels, 5))  # grade projections 0..4
+        self.v = nn.Parameter(torch.randn(out_channels, in_channels, 4))  # e0 * grade 0..3
+        self.scalar_bias = nn.Parameter(torch.zeros(out_channels))        # only on scalar output
+
+        self.register_buffer("grade_masks", constants.grade_masks)                # [5,16]
+        self.register_buffer("e0_geometric_products", constants.e0_geometric_products)  # [16,16]
+
+    def forward(self, x):
+        # x can be [B,N,16] or [B,N,Cin,16]
+        if x.dim() == 3:
+            x = x.unsqueeze(2)   # [B,N,1,16]
+
+        B, N, Cin, D = x.shape
+        assert Cin == self.in_channels, f"expected Cin={self.in_channels}, got {Cin}"
+        # ---- First sum: \sum_k w_k * <x>_k
+        # Broadcast masks: [5,16] -> [1,1,1,5,16]
+        gm = self.grade_masks.view(1,1,1,5,D)
+        xk = (x.unsqueeze(3) * gm)          # [B,N,Cin,5,16]
+        # einsum over in-channels with per-grade matrices W_k[o,i]
+        y1 = 0
+        for k in range(5):
+            Wk = self.w[..., k]             # [Cout, Cin]
+            y1 = y1 + torch.einsum('bnid,oi->bnod', xk[:, :, :, k, :], Wk)  # [B,N,Cout,16]
+        # add scalar bias to scalar component
+        y1[:, :, :, 0] = y1[:, :, :, 0] + self.scalar_bias.view(1,1,-1)
+
+        # ---- Second sum: \sum_j v_j * <x e0>_j, j=0..3
+        xe0 = x @ self.e0_geometric_products.T    # [B,N,Cin,16]
+        xj  = (xe0.unsqueeze(3) * gm[:, :, :, :4])  # keep grades 0..3 -> [B,N,Cin,4,16]
+        y2 = 0
+        for j in range(4):
+            Vj = self.v[..., j]             # [Cout, Cin]
+            y2 = y2 + torch.einsum('bnid,oi->bnod', xj[:, :, :, j, :], Vj)
+
+        y = y1 + y2  # [B,N,Cout,16]
+
+        if self.out_channels == 1:
+            y = y.squeeze(2)  # [B,N,16]
+        return y
 
 
 
