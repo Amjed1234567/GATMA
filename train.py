@@ -358,9 +358,9 @@ def main():
     train(model, train_loader, val_loader, criterion, optimizer, num_epochs=95, ckpt_path="best_model.pth")
     if os.path.isfile("best_model.pth"):
         model.load_state_dict(torch.load("best_model.pth", map_location=device))
-    test_loss = evaluate(model.to(device), test_loader, criterion)
-    print(f"[TEST] MAE: {test_loss:.6f}")
-    wandb.log({"test/mae": test_loss})
+    test_mae, test_norm = evaluate(model.to(device), test_loader, criterion)
+    print(f"[TEST] MAE: {test_mae:.6f} | Norm: {test_norm:.6f}")
+    wandb.log({"test/mae": test_mae})
     torch.save(model.state_dict(), 'gatma_model_final.pth')
 
 if __name__ == "__main__":
