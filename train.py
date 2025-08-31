@@ -80,9 +80,75 @@ scaler = amp.GradScaler('cuda', enabled=use_amp)
 
 
 # -------------------------
+# This part is only for dipole moment - TARGET_IDX = 0.
+# Padding, pooling and masking - Because some atoms are just zeros.
+# -------------------------
+def dipole_pred(outputs, inputs, model):
+    """
+    Compute dipole prediction as:
+      For each atom:
+        sum_vector  = sum over channels of vector part (e1,e2,e3) of MV
+        sum_scalar  = sum over channels of scalar part (1) of MV
+        sum_atom    = sum_vector + sum_scalar * X   (X = atom coords from trivector inputs)
+      Then sum over atoms -> vector V, and prediction = ||V||_2.
+
+    Args:
+        outputs: [B, N*C, 16]  (or [B, N, 16] if C=1)
+        inputs:  [B, N, 16]    (padded atoms)
+        model:   MVTransformer (for channels_per_atom)
+
+    Returns:
+        preds: [B] dipole magnitudes
+    """
+    B, N, D = inputs.shape
+    C = getattr(model, "channels_per_atom", 1)
+
+    # Reshape outputs back to per-atom, per-channel
+    if C > 1:
+        outputs = outputs.view(B, N, C, D)  # [B, N, C, 16]
+    else:
+        outputs = outputs.unsqueeze(2)       # [B, N, 1, 16]
+
+    # Indices for components
+    comps = constants.components
+    idx_scalar = comps.index('1')
+    idx_e1 = comps.index('e1'); idx_e2 = comps.index('e2'); idx_e3 = comps.index('e3')
+    idx_x  = comps.index('e0e1e2')
+    idx_y  = comps.index('e0e1e3')
+    idx_z  = comps.index('e0e2e3')
+
+    # Sum over channels: scalar and vector parts
+    sum_scalar = outputs[..., idx_scalar].sum(dim=2)                   # [B, N]
+    sum_vector = torch.stack([
+        outputs[..., idx_e1].sum(dim=2),
+        outputs[..., idx_e2].sum(dim=2),
+        outputs[..., idx_e3].sum(dim=2),
+    ], dim=-1)                                                         # [B, N, 3]
+
+    # Extract atom coordinates X from the input trivector components
+    # [B, N, 3]
+    X = torch.stack([inputs[..., idx_x], inputs[..., idx_y], inputs[..., idx_z]], dim=-1)  
+
+    # Per-atom contribution, then sum over (real) atoms
+    sum_atom = sum_vector + sum_scalar.unsqueeze(-1) * X               # [B, N, 3]
+
+    # Mask out padded atoms
+    atom_mask = (inputs.abs().sum(dim=2) > 0).float().unsqueeze(-1)    # [B, N, 1]
+    V = (sum_atom * atom_mask).sum(dim=1)                               # [B, 3]
+
+    # Dipole magnitude
+    return torch.linalg.norm(V, dim=-1)                                 # [B]
+
+
+
+# -------------------------
 # Padding, pooling and masking - Because some atoms are just zeros.
 # -------------------------
 def pooled_pred(outputs, inputs, model):
+    # Special dipole construction only when predicting QM9 target 0
+    if TARGET_IDX == 0:
+        return dipole_pred(outputs, inputs, model)
+    
     mask = (inputs.abs().sum(dim=2) > 0).float()         # [B,N]
     if getattr(model, "channels_per_atom", 1) > 1:
         mask = mask.repeat_interleave(model.channels_per_atom, dim=1)  # [B,N*n]
