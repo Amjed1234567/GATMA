@@ -117,7 +117,7 @@ def dipole_pred(outputs, inputs, model):
     idx_y  = comps.index('e0e1e3')
     idx_z  = comps.index('e0e2e3')
 
-    # Sum over channels: scalar and vector parts
+    # Sum over channels: scalar (grade = 0) and vector (grade = 1) parts 
     sum_scalar = outputs[..., idx_scalar].sum(dim=2)                   # [B, N]
     sum_vector = torch.stack([
         outputs[..., idx_e1].sum(dim=2),
