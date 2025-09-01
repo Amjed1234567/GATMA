@@ -148,10 +148,10 @@ def evaluate(model, loader, criterion):
             outputs = model(inputs)
             preds   = pooled_pred(outputs, inputs, model)
 
-        # Unnormalized MAE (human-readable)
+        # Unnormalized MAE.
         mae  = criterion(preds, targets).item()
 
-        # Normalized L1 (matches training scale)
+        # Normalized L1.
         norm_targets = (targets - y_mean) / y_std
         norm_preds   = (preds   - y_mean.to(device)) / y_std.to(device)
         norm = criterion(norm_preds, norm_targets).item()
@@ -205,7 +205,7 @@ def train(model, train_loader, val_loader, criterion, optimizer,
             with amp.autocast('cuda', enabled=use_amp, dtype=torch.bfloat16):
                 outputs = model(inputs)
                 preds = pooled_pred(outputs, inputs, model)
-                # train on normalized scale (matches your code)
+                # train on normalized scale 
                 norm_targets = (targets - y_mean) / y_std
                 norm_preds   = (preds   - y_mean.to(device)) / y_std.to(device)
                 loss = criterion(norm_preds, norm_targets)
@@ -222,9 +222,9 @@ def train(model, train_loader, val_loader, criterion, optimizer,
         train_loss = running / max(len(train_loader), 1)
 
         # ----- validation -----
-        val_mae, val_norm = evaluate(model, val_loader, criterion)  # returns (mae, norm) 【turn1file0】
+        val_mae, val_norm = evaluate(model, val_loader, criterion)  # returns (mae, norm) 
 
-        # scheduler step on smoothed val_norm (as you already do) 【turn1file0】
+        # scheduler step on smoothed val_norm
         if ema_val is None:
             ema_val = val_norm
         else:
