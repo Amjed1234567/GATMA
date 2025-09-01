@@ -84,60 +84,34 @@ scaler = amp.GradScaler('cuda', enabled=use_amp)
 # Padding, pooling and masking - Because some atoms are just zeros.
 # -------------------------
 def dipole_pred(outputs, inputs, model):
-    """
-    Compute dipole prediction as:
-      For each atom:
-        sum_vector  = sum over channels of vector part (e1,e2,e3) of MV
-        sum_scalar  = sum over channels of scalar part (1) of MV
-        sum_atom    = sum_vector + sum_scalar * X   (X = atom coords from trivector inputs)
-      Then sum over atoms -> vector V, and prediction = ||V||_2.
-
-    Args:
-        outputs: [B, N*C, 16]  (or [B, N, 16] if C=1)
-        inputs:  [B, N, 16]    (padded atoms)
-        model:   MVTransformer (for channels_per_atom)
-
-    Returns:
-        preds: [B] dipole magnitudes
-    """
     B, N, D = inputs.shape
     C = getattr(model, "channels_per_atom", 1)
-
-    # Reshape outputs back to per-atom, per-channel
     if C > 1:
-        outputs = outputs.view(B, N, C, D)  # [B, N, C, 16]
+        outputs = outputs.view(B, N, C, D)
     else:
-        outputs = outputs.unsqueeze(2)       # [B, N, 1, 16]
+        outputs = outputs.unsqueeze(2)
 
-    # Indices for components
     comps = constants.components
     idx_scalar = comps.index('1')
-    idx_e1 = comps.index('e1'); idx_e2 = comps.index('e2'); idx_e3 = comps.index('e3')
     idx_x  = comps.index('e0e1e2')
     idx_y  = comps.index('e0e1e3')
     idx_z  = comps.index('e0e2e3')
 
-    # Sum over channels: scalar (grade = 0) and vector (grade = 1) parts 
-    sum_scalar = outputs[..., idx_scalar].sum(dim=2)                   # [B, N]
-    sum_vector = torch.stack([
-        outputs[..., idx_e1].sum(dim=2),
-        outputs[..., idx_e2].sum(dim=2),
-        outputs[..., idx_e3].sum(dim=2),
-    ], dim=-1)                                                         # [B, N, 3]
+    # scalar “charges”
+    q = outputs[..., idx_scalar].sum(dim=2)              # [B, N]
 
-    # Extract atom coordinates X from the input trivector components
-    # [B, N, 3]
+    # positions from trivectors. [B,N,3]
     X = torch.stack([inputs[..., idx_x], inputs[..., idx_y], inputs[..., idx_z]], dim=-1)  
 
-    # Per-atom contribution, then sum over (real) atoms
-    sum_atom = sum_vector + sum_scalar.unsqueeze(-1) * X               # [B, N, 3]
+    # mask padded atoms
+    mask = (inputs.abs().sum(dim=2) > 0).float()         # [B,N]
+    q = q * mask
 
-    # Mask out padded atoms
-    atom_mask = (inputs.abs().sum(dim=2) > 0).float().unsqueeze(-1)    # [B, N, 1]
-    V = (sum_atom * atom_mask).sum(dim=1)                               # [B, 3]
+    V = (q.unsqueeze(-1) * X).sum(dim=1)                 # [B,3]
 
-    # Dipole magnitude
-    return torch.linalg.norm(V, dim=-1)                                 # [B]
+    # Convert e·Å to Debye so the scale matches the label.
+    # 1 e·Å = 4.80320427 D.
+    return torch.linalg.norm(V, dim=-1) * 4.80320427
 
 
 
@@ -192,7 +166,9 @@ def evaluate(model, loader, criterion):
 # -------------------------
 # Train loop with validation & checkpoint
 # -------------------------
-def train(model, train_loader, val_loader, criterion, optimizer, num_epochs=20, ckpt_path="best_model.pth"):
+def train(model, train_loader, val_loader, criterion, optimizer,
+          num_epochs=20, ckpt_path="best_model.pth",
+          early_stop_patience=20):
     os.environ["WANDB_DEBUG"] = "true"
     os.environ["WANDB_CONSOLE"] = "wrap"
 
@@ -209,49 +185,46 @@ def train(model, train_loader, val_loader, criterion, optimizer, num_epochs=20, 
 
     model.to(device)
     scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-6)
+
     ema_alpha = 0.9
     ema_val = None
-    best_val = float("inf")
+
+    best_val_mae = float("inf")
+    best_epoch = -1
+    epochs_no_improve = 0
 
     for epoch in range(1, num_epochs + 1):
         model.train()
         running = 0.0
-        
+
         for batch_idx, (inputs, targets) in enumerate(train_loader):
             inputs = inputs.to(device, non_blocking=True)
             targets = targets.to(device).view(-1).to(torch.float32)
 
             optimizer.zero_grad(set_to_none=True)
-
-            # Forward & loss under autocast
             with amp.autocast('cuda', enabled=use_amp, dtype=torch.bfloat16):
                 outputs = model(inputs)
                 preds = pooled_pred(outputs, inputs, model)
+                # train on normalized scale (matches your code)
                 norm_targets = (targets - y_mean) / y_std
-                norm_preds   = (preds - y_mean.to(device)) / y_std.to(device)
+                norm_preds   = (preds   - y_mean.to(device)) / y_std.to(device)
                 loss = criterion(norm_preds, norm_targets)
 
-            # Backprop & step via GradScaler (no-op on CPU)
             scaler.scale(loss).backward()
-            # --- Gradient clipping ---
-            scaler.unscale_(optimizer)  # unscale before clipping
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
 
             running += loss.item()
+            wandb.log({"train/batch_loss": loss.item(), "epoch": epoch, "batch": batch_idx})
 
-            wandb.log({
-                "train/batch_loss": loss.item(),
-                "epoch": epoch,
-                "batch": batch_idx,
-            })
-                        
         train_loss = running / max(len(train_loader), 1)
 
-        val_mae, val_norm = evaluate(model, val_loader, criterion)
+        # ----- validation -----
+        val_mae, val_norm = evaluate(model, val_loader, criterion)  # returns (mae, norm) 【turn1file0】
 
-        # scheduler on normalized (consistent scale)
+        # scheduler step on smoothed val_norm (as you already do) 【turn1file0】
         if ema_val is None:
             ema_val = val_norm
         else:
@@ -260,7 +233,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, num_epochs=20, 
 
         current_lr = scheduler.get_last_lr()[0]
         print(f"Epoch {epoch:03d} | train_norm={train_loss:.6f} | val_mae={val_mae:.6f} | "
-            f"val_norm={val_norm:.6f} | val_norm_ema={ema_val:.6f} | lr={current_lr:.6e}")
+              f"val_norm={val_norm:.6f} | val_norm_ema={ema_val:.6f} | lr={current_lr:.6e}")
 
         wandb.log({
             "train/epoch_norm": train_loss,
@@ -271,18 +244,25 @@ def train(model, train_loader, val_loader, criterion, optimizer, num_epochs=20, 
             "epoch": epoch
         })
 
-    # save best checkpoint
-    if val_mae < best_val:
-        best_val = val_mae
-        torch.save(model.state_dict(), ckpt_path)
-        wandb.log({"model/best_val": best_val})
+        # ----- early-stopping on val_mae & best checkpoint inside loop -----
+        if val_mae < best_val_mae:
+            best_val_mae = val_mae
+            best_epoch = epoch
+            epochs_no_improve = 0
+            torch.save(model.state_dict(), ckpt_path)
+            wandb.log({"model/best_val_mae": best_val_mae, "model/best_epoch": best_epoch})
+        else:
+            epochs_no_improve += 1
+            if epochs_no_improve >= early_stop_patience:
+                print(f"Early stopping at epoch {epoch} (best val_mae={best_val_mae:.6f} at epoch {best_epoch})")
+                break
 
 
 def main():
     # -------------------------
     # Model & dataset init
     # -------------------------
-    model = MVTransformer(num_layers=4, num_heads=3, channels_per_atom=64)
+    model = MVTransformer(num_layers=8, num_heads=4, channels_per_atom=4)
     full_dataset = MVQM9Data()
     print(f"Full QM9 size reported by wrapper: {len(full_dataset)}")
 
@@ -325,7 +305,7 @@ def main():
 
     # Loss & optimizer & scaler
     criterion = nn.L1Loss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-3, weight_decay=1e-2)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=1e-4)
     #scaler = amp.GradScaler(device_type="cuda", enabled=use_amp)
 
     # >>> QUICK 1 EPOCH SANITY RUN WITH TIMING (TEMPORARY) <<<
@@ -349,18 +329,25 @@ def main():
         scaler.step(optimizer)
         scaler.update()
 
+        running_loss += loss.item()
+        
     epoch_time = time.time() - start_time
     avg_loss = running_loss / max(len(train_loader), 1)
     print(f"[Sanity check] Epoch time: {epoch_time:.2f} sec | Avg loss: {avg_loss:.6f}")
     # >>> END PROBE BLOCK <<<
 
     # Train, then test
-    train(model, train_loader, val_loader, criterion, optimizer, num_epochs=95, ckpt_path="best_model.pth")
+    train(model, train_loader, val_loader, criterion, optimizer, num_epochs=100, ckpt_path="best_model.pth")
     if os.path.isfile("best_model.pth"):
         model.load_state_dict(torch.load("best_model.pth", map_location=device))
+    # Please note that test_mae is the raw mean absolute error (MAE) 
+    # in the original physical units of the target.
+    # test_norm is the normalized MAE, computed after subtracting the dataset mean (y_mean) 
+    # and dividing by the dataset standard deviation (y_std). For for comparing 
+    # across different targets.        
     test_mae, test_norm = evaluate(model.to(device), test_loader, criterion)
     print(f"[TEST] MAE: {test_mae:.6f} | Norm: {test_norm:.6f}")
-    wandb.log({"test/mae": test_mae})
+    wandb.log({"test/mae": test_mae, "test/norm": test_norm})
     torch.save(model.state_dict(), 'gatma_model_final.pth')
 
 if __name__ == "__main__":
