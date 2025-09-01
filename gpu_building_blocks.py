@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -112,13 +113,18 @@ class MVAttentionHead(nn.Module):
         self.query = MVLinear()
         self.key = MVLinear()
         self.value = MVLinear()
+        self.gamma = nn.Parameter(torch.tensor(1.0))
         
         # Fixed parameters. Will not change during training. 
         self.register_buffer("mask", constants.non_e0_mask)
         
         # For scaling. 
-        self.scale = (len(constants.components)) ** -0.5
-
+        eff_dim = int(constants.non_e0_mask.sum().item())  # = 8
+        base = 1.0 / math.sqrt(eff_dim)
+        # The scale is learnable, positive and near base.
+        self.log_scale = nn.Parameter(torch.tensor(0.0))  
+        self.register_buffer("base_scale", torch.tensor(base, dtype=torch.float32))
+        
     def forward(self, x):
         """
         Args:
@@ -127,25 +133,35 @@ class MVAttentionHead(nn.Module):
         Returns:
             (torch.tensor): Shape: (batch_size, num_tokens, len(constants.components)).
         """
-        q = self.query(x)
-        k = self.key(x)
-        v = self.value(x)
-        
-        # Masking out e0 components.
-        q_masked = q * self.mask
-        k_masked = k * self.mask        
-        
-        # Using bmm instead of einsum. bmm is faster.
-        # https://docs.pytorch.org/docs/stable/generated/torch.bmm.html
-        # Assuming the shape of q_masked and k_masked is 
-        # (Batch_size, num_tokens, len(constants.components)), it is necessary to 
-        # transpose k_masked to get shape (Batch_size, len(constants.components), num_tokens).
-        # The shape of the product is (batch_size, num_tokens, num_tokens).
-        attn_logits = torch.bmm(q_masked, k_masked.transpose(1, 2)) * self.scale
+        q = self.query(x); k = self.key(x); v = self.value(x)
+        q_masked = q * self.mask; k_masked = k * self.mask
+        attn_logits = torch.bmm(q_masked, k_masked.transpose(1, 2))
+
+        scale = self.base_scale * torch.exp(self.log_scale)
+        attn_logits = attn_logits * scale
+
+        # --- Distance-aware bias ---
+        comps = constants.components
+        ix, iy, iz = comps.index('e0e1e2'), comps.index('e0e1e3'), comps.index('e0e2e3')
+
+        # positions from trivector coords in the *current-layer* input x
+        R = torch.stack([x[..., ix], x[..., iy], x[..., iz]], dim=-1)   # [B, N, 3]
+        d2 = torch.cdist(R, R).pow(2)                                   # [B, N, N]
+
+        # subtract learnable multiple of squared distance
+        attn_logits = attn_logits - self.gamma * d2
+        # --- End distance-aware bias ---
+
+        # build key mask from input (non-zero tokens)
+        key_mask = (x.abs().sum(dim=-1) > 0)  # [B, N] True = real token
+        # ~ is just a bitwise NOT in PyTorch. For bool tensors, 
+        # it computes the logical NOT. 
+        # https://docs.pytorch.org/docs/stable/generated/torch.bitwise_not.html
+        attn_logits = attn_logits.masked_fill(~key_mask.unsqueeze(1), -1e9)
+
         attn_weights = F.softmax(attn_logits, dim=-1)
         
         return torch.bmm(attn_weights, v)
-
 
 
 class MVMultiHeadAttention(nn.Module):
