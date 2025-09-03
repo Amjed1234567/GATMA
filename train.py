@@ -84,34 +84,64 @@ scaler = amp.GradScaler('cuda', enabled=use_amp)
 # Padding, pooling and masking - Because some atoms are just zeros.
 # -------------------------
 def dipole_pred(outputs, inputs, model):
+    """
+    Compute dipole prediction as:
+      For each atom:
+        sum_vector  = sum over channels of vector part (e1,e2,e3) of MV
+        sum_scalar  = sum over channels of scalar part (1) of MV
+        sum_atom    = sum_vector + sum_scalar * X   (X = atom coords from trivector inputs)
+      Then sum over atoms -> vector V, and prediction = ||V||_2.
+
+    Args:
+        outputs: [B, N*C, 16]  (or [B, N, 16] if C=1)
+        inputs:  [B, N, 16]    (padded atoms)
+        model:   MVTransformer (for channels_per_atom)
+
+    Returns:
+        preds: [B] dipole magnitudes
+    """
     B, N, D = inputs.shape
     C = getattr(model, "channels_per_atom", 1)
-    if C > 1:
-        outputs = outputs.view(B, N, C, D)
-    else:
-        outputs = outputs.unsqueeze(2)
 
+    # Reshape outputs back to per-atom, per-channel
+    if C > 1:
+        outputs = outputs.view(B, N, C, D)  # [B, N, C, 16]
+    else:
+        outputs = outputs.unsqueeze(2)       # [B, N, 1, 16]
+
+    # Indices for components
     comps = constants.components
     idx_scalar = comps.index('1')
+    idx_e1 = comps.index('e1'); idx_e2 = comps.index('e2'); idx_e3 = comps.index('e3')
     idx_x  = comps.index('e0e1e2')
     idx_y  = comps.index('e0e1e3')
     idx_z  = comps.index('e0e2e3')
+    idx_w  = comps.index('e1e2e3')
 
-    # scalar “charges”
-    q = outputs[..., idx_scalar].sum(dim=2)              # [B, N]
+    # Sum over channels: scalar and vector parts
+    sum_scalar = outputs[..., idx_scalar].sum(dim=2)                   # [B, N]
+    sum_vector = torch.stack([
+        outputs[..., idx_e1].sum(dim=2),
+        outputs[..., idx_e2].sum(dim=2),
+        outputs[..., idx_e3].sum(dim=2),
+    ], dim=-1)                                                         # [B, N, 3]
 
-    # positions from trivectors. [B,N,3]
-    X = torch.stack([inputs[..., idx_x], inputs[..., idx_y], inputs[..., idx_z]], dim=-1)  
+    # Extract atom coordinates X from the input trivector components
+    X = torch.stack([inputs[..., idx_x], inputs[..., idx_y], inputs[..., idx_z]], dim=-1)  # [B,N,3]
+    w = inputs[..., idx_w].unsqueeze(-1)  # [B,N,1]
+    
+    # Safe dehomogenization
+    X = X / torch.clamp(w, min=1e-8)
+    
+    # Per-atom contribution, then sum over (real) atoms
+    sum_atom = sum_vector + sum_scalar.unsqueeze(-1) * X               # [B, N, 3]
 
-    # mask padded atoms
-    mask = (inputs.abs().sum(dim=2) > 0).float()         # [B,N]
-    q = q * mask
+    # Mask out padded atoms
+    atom_mask = (inputs.abs().sum(dim=2) > 0).float().unsqueeze(-1)    # [B, N, 1]
+    V = (sum_atom * atom_mask).sum(dim=1)                               # [B, 3]
 
-    V = (q.unsqueeze(-1) * X).sum(dim=1)                 # [B,3]
-
-    # Convert e·Å to Debye so the scale matches the label.
-    # 1 e·Å = 4.80320427 D.
-    return torch.linalg.norm(V, dim=-1) * 4.80320427
+    # Dipole magnitude
+    return torch.linalg.norm(V, dim=-1)                                 # [B]
 
 
 
