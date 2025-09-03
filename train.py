@@ -294,7 +294,7 @@ def main():
     # -------------------------
     # Model & dataset init
     # -------------------------
-    model = MVTransformer(num_layers=8, num_heads=4, channels_per_atom=4)
+    model = MVTransformer(num_layers=2, num_heads=4, channels_per_atom=128)
     full_dataset = MVQM9Data()
     print(f"Full QM9 size reported by wrapper: {len(full_dataset)}")
 
@@ -337,7 +337,7 @@ def main():
 
     # Loss & optimizer & scaler
     criterion = nn.L1Loss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-3, weight_decay=1e-4)
     #scaler = amp.GradScaler(device_type="cuda", enabled=use_amp)
 
     # >>> QUICK 1 EPOCH SANITY RUN WITH TIMING (TEMPORARY) <<<
