@@ -87,7 +87,7 @@ def dipole_pred(outputs, inputs, model):
     """
     Compute dipole prediction as:
       For each atom:
-        sum_vector  = sum over channels of vector part (e1,e2,e3) of MV
+        sum_vector  = sum over channels of vector part (e0,e1,e2,e3) of MV
         sum_scalar  = sum over channels of scalar part (1) of MV
         sum_atom    = sum_vector + sum_scalar * X   (X = atom coords from trivector inputs)
       Then sum over atoms -> vector V, and prediction = ||V||_2.
