@@ -294,7 +294,7 @@ def main():
     # -------------------------
     # Model & dataset init
     # -------------------------
-    model = MVTransformer(num_layers=2, num_heads=4, channels_per_atom=80)
+    model = MVTransformer(num_layers=2, num_heads=4, channels_per_atom=64)
     full_dataset = MVQM9Data()
     print(f"Full QM9 size reported by wrapper: {len(full_dataset)}")
 
