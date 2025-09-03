@@ -135,8 +135,10 @@ def dipole_pred(outputs, inputs, model):
     # Safe dehomogenization
     X = X / torch.clamp(w, min=1e-8)
     
+    # Add a 4th component (zero) to X to match sum_vector
+    X_4d = torch.cat([X, torch.zeros_like(X[..., :1])], dim=-1)  # [B, N, 4]
     # Per-atom contribution, then sum over (real) atoms
-    sum_atom = sum_vector + sum_scalar.unsqueeze(-1) * X               # [B, N, 3]
+    sum_atom = sum_vector + sum_scalar.unsqueeze(-1) * X_4d      # [B, N, 4]
 
     # Mask out padded atoms
     atom_mask = (inputs.abs().sum(dim=2) > 0).float().unsqueeze(-1)    # [B, N, 1]
