@@ -296,7 +296,7 @@ def main():
     # -------------------------
     # Model & dataset init
     # -------------------------
-    model = MVTransformer(num_layers=2, num_heads=4, channels_per_atom=64)
+    model = MVTransformer(num_layers=2, num_heads=4, channels_per_atom=128)
     full_dataset = MVQM9Data()
     print(f"Full QM9 size reported by wrapper: {len(full_dataset)}")
 
@@ -371,7 +371,7 @@ def main():
     # >>> END PROBE BLOCK <<<
 
     # Train, then test
-    train(model, train_loader, val_loader, criterion, optimizer, num_epochs=97, ckpt_path="best_model.pth")
+    train(model, train_loader, val_loader, criterion, optimizer, num_epochs=50, ckpt_path="best_model.pth")
     if os.path.isfile("best_model.pth"):
         model.load_state_dict(torch.load("best_model.pth", map_location=device))
     # Please note that test_mae is the raw mean absolute error (MAE) 
