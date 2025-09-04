@@ -297,7 +297,7 @@ def main():
     # -------------------------
     # Model & dataset init
     # -------------------------
-    model = MVTransformer(num_layers=2, num_heads=4, channels_per_atom=128)
+    model = MVTransformer(num_layers=2, num_heads=4, channels_per_atom=16)
     full_dataset = MVQM9Data()
     print(f"Full QM9 size reported by wrapper: {len(full_dataset)}")
 
@@ -308,7 +308,7 @@ def main():
     print(f"Train: {len(train_set)}  Val: {len(val_set)}  Test: {len(test_set)}")
 
     # Dataloaders
-    BATCH_SIZE, NUM_WORKERS = 100, 4
+    BATCH_SIZE, NUM_WORKERS = 32, 4
     PIN = (device.type == 'cuda')
     PERSIST = PIN and NUM_WORKERS > 0
     train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True,

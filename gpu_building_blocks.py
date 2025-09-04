@@ -146,7 +146,7 @@ class MVAttentionHead(nn.Module):
 
         # positions from trivector coords in the *current-layer* input x
         R = torch.stack([x[..., ix], x[..., iy], x[..., iz]], dim=-1)   # [B, N, 3]
-        d2 = torch.cdist(R, R).pow(2)                                   # [B, N, N]
+        d2 = torch.cdist(R, R).to(x.dtype)
 
         # subtract learnable multiple of squared distance
         attn_logits = attn_logits - self.gamma * d2
@@ -182,13 +182,14 @@ class MVMultiHeadAttention(nn.Module):
             (torch.tensor): Shape: (batch_size, num_tokens, len(constants.components)).
         """
         
-        # Concatenate outputs from all heads. Concat on feature dim.
-        multihead_outputs = torch.cat([head(x) for head in self.heads], dim=-1)  
-               
-                 
-        batch, tokens, _ = multihead_outputs.shape
+        B, T, D = x.shape
+        H = len(self.heads)
+        outs = []
+        for h in self.heads:
+            outs.append(h(x))             # each is [B,T,16]
+        multihead_outputs = torch.stack(outs, dim=-2).reshape(B, T, H*D)  # [B,T,H*16]
         
-        return self.output_proj(multihead_outputs.view(batch, tokens, -1))
+        return self.output_proj(multihead_outputs)
 
 
 
