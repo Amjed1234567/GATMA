@@ -277,7 +277,7 @@ def train(model, train_loader, val_loader, criterion, optimizer,
             "lr": current_lr,
             "epoch": epoch
         })
-
+        """
         # ----- early-stopping on val_mae & best checkpoint inside loop -----
         if val_mae < best_val_mae:
             best_val_mae = val_mae
@@ -290,7 +290,7 @@ def train(model, train_loader, val_loader, criterion, optimizer,
             if epochs_no_improve >= early_stop_patience:
                 print(f"Early stopping at epoch {epoch} (best val_mae={best_val_mae:.6f} at epoch {best_epoch})")
                 break
-
+        """
 
 def main():
     # -------------------------
