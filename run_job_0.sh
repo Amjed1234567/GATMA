@@ -11,7 +11,7 @@
 #BSUB -gpu "num=1:mode=exclusive_process"
 
 ### specify the memory needed
-#BSUB -R "rusage[mem=2GB]"
+#BSUB -R "rusage[mem=4GB]"
 
 ### set walltime limit: hh:mm --
 #BSUB -W 23:59
