@@ -1,4 +1,5 @@
 import os
+import gc; gc.collect() # from https://docs.python.org/3/library/gc.html
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader, random_split
@@ -368,6 +369,10 @@ def main():
     epoch_time = time.time() - start_time
     avg_loss = running_loss / max(len(train_loader), 1)
     print(f"[Sanity check] Epoch time: {epoch_time:.2f} sec | Avg loss: {avg_loss:.6f}")
+    
+    # Free up any leftovers from the quick run
+    del outputs, preds, loss    
+    torch.cuda.empty_cache()
     # >>> END PROBE BLOCK <<<
 
     # Train, then test
@@ -383,6 +388,13 @@ def main():
     print(f"[TEST] MAE: {test_mae:.6f} | Norm: {test_norm:.6f}")
     wandb.log({"test/mae": test_mae, "test/norm": test_norm})
     torch.save(model.state_dict(), 'gatma_model_final.pth')
+    
+    # Clean up before saving
+    del test_loader, val_loader, train_loader
+    del outputs, preds, loss
+    gc.collect() # From https://docs.python.org/3/library/gc.html
+    torch.cuda.empty_cache()
+
 
 if __name__ == "__main__":
     # From https://docs.pytorch.org/docs/stable/multiprocessing.html
