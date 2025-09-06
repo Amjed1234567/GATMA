@@ -113,35 +113,35 @@ def dipole_pred(outputs, inputs, model):
     # Indices for components
     comps = constants.components
     idx_scalar = comps.index('1')
-    idx_e0 = comps.index('e0')
-    idx_e1 = comps.index('e1'); idx_e2 = comps.index('e2'); idx_e3 = comps.index('e3')
+    idx_e0     = comps.index('e0')
     idx_x  = comps.index('e0e1e2')
     idx_y  = comps.index('e0e1e3')
     idx_z  = comps.index('e0e2e3')
     idx_w  = comps.index('e1e2e3')
 
-    # Sum over channels: scalar and vector parts
+    # Sum over channels: scalar part
     sum_scalar = outputs[..., idx_scalar].sum(dim=2)                   # [B, N]
-    sum_vector = torch.stack([
-        outputs[..., idx_e0].sum(dim=2),
-        outputs[..., idx_e1].sum(dim=2),
-        outputs[..., idx_e2].sum(dim=2),
-        outputs[..., idx_e3].sum(dim=2),
-    ], dim=-1)                                                         # [B, N, 3]
 
-    # Extract atom coordinates X from the input trivector components
-    X = torch.stack([inputs[..., idx_x], inputs[..., idx_y], inputs[..., idx_z]], dim=-1)  # [B,N,3]
-    w = inputs[..., idx_w].unsqueeze(-1)  # [B,N,1]
-    
-    # Safe dehomogenization
-    X = X / torch.clamp(w, min=1e-8)
-    
-    # Add a 4th component (zero) to X to match sum_vector
-    X_4d = torch.cat([X, torch.zeros_like(X[..., :1])], dim=-1)  # [B, N, 4]
-    # Per-atom contribution, then sum over (real) atoms
-    sum_atom = sum_vector + sum_scalar.unsqueeze(-1) * X_4d      # [B, N, 4]
+    # --- X, Y, Z from channel-wise coefficient ratios ( ... / e0 ) ---
+    # Safe per-channel division by e0 coefficient
+    denom = torch.clamp(outputs[..., idx_e0], min=1e-8)                # [B, N, C]
+    Xc = outputs[..., idx_x] / denom                                   # [B, N, C]
+    Yc = outputs[..., idx_y] / denom
+    Zc = outputs[..., idx_z] / denom
 
-    # Mask out padded atoms
+    # Sum over channels -> [B, N, 3]
+    sum_xyz = torch.stack([Xc.sum(dim=2), Yc.sum(dim=2), Zc.sum(dim=2)], dim=-1)
+
+    # Extract atom coordinates from *inputs* via dehomogenization by w = e1e2e3
+    # X_pos shape is [B,N,3]
+    X_pos = torch.stack([inputs[..., idx_x], inputs[..., idx_y], inputs[..., idx_z]], dim=-1)  
+    w = inputs[..., idx_w].unsqueeze(-1) # [B,N,1]
+    X_pos = X_pos / torch.clamp(w, min=1e-8)
+
+    # Per-atom contribution in 3D, then sum over real atoms
+    sum_atom = sum_xyz + sum_scalar.unsqueeze(-1) * X_pos     # [B, N, 3]
+
+    # Mask padded atoms and aggregate
     atom_mask = (inputs.abs().sum(dim=2) > 0).float().unsqueeze(-1)    # [B, N, 1]
     V = (sum_atom * atom_mask).sum(dim=1)                               # [B, 3]
 
