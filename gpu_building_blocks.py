@@ -22,6 +22,18 @@ class MVLinear(nn.Module):
         self.register_buffer("e0_geometric_products", constants.e0_geometric_products)  # [16,16]
 
     def forward(self, x):
+        """
+        Args:
+        x (torch.Tensor):
+            - shape [B, N, 16]          (interpreted as Cin=1), or
+            - shape [B, N, Cin, 16]     with Cin == self.in_channels.
+
+        Returns:
+        torch.Tensor:
+            - shape [B, N, Cout, 16]    when out_channels > 1, or
+            - shape [B, N, 16]          when out_channels == 1 (channel dim squeezed),
+          where Cout == self.out_channels.
+        """
         # x can be [B,N,16] or [B,N,Cin,16]
         if x.dim() == 3:
             x = x.unsqueeze(2)   # [B,N,1,16]
@@ -98,11 +110,9 @@ class MVLayerNorm(nn.Module):
         Returns:
             torch.tensor: Shape: (batch_size, num_tokens, len(constants.components)).
         """
-        # The tensor inner product with itself (without e0 blades).
-        # The shape is (batch_size, num_tokens, 1).
-        inner_prod = ((x ** 2) * self.mask).sum(dim=-1, keepdim=True)
-        # Now, the shape is (batch_size, 1, 1).
-        norm = torch.sqrt(inner_prod.mean(dim=1, keepdim=True) + self.eps)
+        # The tensor inner product with itself (without e0 blades).        
+        inner = ((x**2) * self.mask).sum(dim=-1, keepdim=True)  # [B, N, 1]        
+        norm  = torch.sqrt(inner + self.eps)                    # [B, N, 1]
         
         return x / norm
 
@@ -205,16 +215,14 @@ class MVGeometricBilinear(nn.Module):
             len(constants.components))
         Returns:
             torch.Tensor: Concatenation of geometric product and E(3)-equivariant join. 
-            Shape: (batch_siza, num_tokens, 2*len(constants.components))
+            Shape: (batch_size, num_tokens, 2*len(constants.components))
         """
         gp = geometric_product_batch(x, y)           
         join = equi_join_batch(x, y, reference)      
 
         return torch.cat([gp, join], dim=-1)         
-
     
     
-
 # Putting the layers together to form a block. 
 class MVFeedforwardBlock(nn.Module):    
     def __init__(self):
