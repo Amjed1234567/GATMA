@@ -156,7 +156,7 @@ class MVAttentionHead(nn.Module):
 
         # positions from trivector coords in the *current-layer* input x
         R = torch.stack([x[..., ix], x[..., iy], x[..., iz]], dim=-1)   # [B, N, 3]
-        d2 = torch.cdist(R, R).to(x.dtype)
+        d2 = torch.cdist(R, R).pow(2)
 
         # subtract learnable multiple of squared distance
         attn_logits = attn_logits - self.gamma * d2
