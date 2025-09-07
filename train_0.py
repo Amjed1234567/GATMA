@@ -123,8 +123,8 @@ def dipole_pred(outputs, inputs, model):
     sum_scalar = outputs[..., idx_scalar].sum(dim=2)                   # [B, N]
 
     # --- X, Y, Z from channel-wise coefficient ratios ( ... / e0 ) ---
-    # Safe per-channel division by e0 coefficient
-    denom = torch.clamp(outputs[..., idx_e0], min=1e-8)                # [B, N, C]
+    # safer: scale by a denominator that's never << 1
+    denom = outputs[..., idx_e0].abs() + 1.0  
     Xc = outputs[..., idx_x] / denom                                   # [B, N, C]
     Yc = outputs[..., idx_y] / denom
     Zc = outputs[..., idx_z] / denom
@@ -390,8 +390,8 @@ def main():
     torch.save(model.state_dict(), 'gatma_model_final.pth')
     
     # Clean up before saving
-    del test_loader, val_loader, train_loader
-    del outputs, preds, loss
+    #del test_loader, val_loader, train_loader
+    #del outputs, preds, loss
     gc.collect() # From https://docs.python.org/3/library/gc.html
     torch.cuda.empty_cache()
 
