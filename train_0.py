@@ -376,7 +376,7 @@ def main():
     # >>> END PROBE BLOCK <<<
 
     # Train, then test
-    train(model, train_loader, val_loader, criterion, optimizer, num_epochs=88, ckpt_path="best_model.pth")
+    train(model, train_loader, val_loader, criterion, optimizer, num_epochs=80, ckpt_path="best_model.pth")
     if os.path.isfile("best_model.pth"):
         model.load_state_dict(torch.load("best_model.pth", map_location=device))
     # Please note that test_mae is the raw mean absolute error (MAE) 
