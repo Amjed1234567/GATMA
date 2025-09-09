@@ -10,6 +10,33 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch import amp 
 import constants
 
+
+# -------------------------
+# Saving necessary information for the next run.
+# -------------------------
+def save_checkpoint(path, model, optimizer, scheduler, scaler, epoch, y_mean, y_std):
+    torch.save({
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict() if scheduler is not None else None,
+        "scaler": scaler.state_dict() if scaler is not None else None,
+        "epoch": epoch,
+        "y_mean": y_mean,
+        "y_std": y_std,
+    }, path)
+
+def load_checkpoint(path, model, optimizer, scheduler, scaler, map_location="cpu"):
+    ckpt = torch.load(path, map_location=map_location)
+    model.load_state_dict(ckpt["model"])
+    if optimizer is not None and ckpt.get("optimizer") is not None:
+        optimizer.load_state_dict(ckpt["optimizer"])
+    if scheduler is not None and ckpt.get("scheduler") is not None:
+        scheduler.load_state_dict(ckpt["scheduler"])
+    if scaler is not None and ckpt.get("scaler") is not None:
+        scaler.load_state_dict(ckpt["scaler"])
+    return ckpt.get("epoch", 0), ckpt.get("y_mean"), ckpt.get("y_std")
+
+
 # -------------------------
 # Device & basic prints
 # -------------------------
@@ -201,9 +228,9 @@ def evaluate(model, loader, criterion):
 # -------------------------
 # Train loop with validation & checkpoint
 # -------------------------
-def train(model, train_loader, val_loader, criterion, optimizer,
-          num_epochs=20, ckpt_path="best_model.pth",
-          early_stop_patience=20):
+def train(model, train_loader, val_loader, criterion, optimizer, scheduler,
+          num_epochs=20, start_epoch=0):
+    
     os.environ["WANDB_DEBUG"] = "true"
     os.environ["WANDB_CONSOLE"] = "wrap"
 
@@ -218,17 +245,13 @@ def train(model, train_loader, val_loader, criterion, optimizer,
         }
     )
 
-    model.to(device)
-    scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-6)
+    model.to(device)    
 
     ema_alpha = 0.9
-    ema_val = None
+    ema_val = None  
 
-    best_val_mae = float("inf")
-    best_epoch = -1
-    epochs_no_improve = 0
+    for epoch in range(start_epoch + 1, start_epoch + num_epochs + 1):
 
-    for epoch in range(1, num_epochs + 1):
         model.train()
         running = 0.0
 
@@ -266,7 +289,8 @@ def train(model, train_loader, val_loader, criterion, optimizer,
             ema_val = ema_alpha * ema_val + (1.0 - ema_alpha) * val_norm
         scheduler.step(ema_val)
 
-        current_lr = scheduler.get_last_lr()[0]
+        current_lr = optimizer.param_groups[0]['lr']
+
         print(f"Epoch {epoch:03d} | train_norm={train_loss:.6f} | val_mae={val_mae:.6f} | "
               f"val_norm={val_norm:.6f} | val_norm_ema={ema_val:.6f} | lr={current_lr:.6e}")
 
@@ -278,20 +302,7 @@ def train(model, train_loader, val_loader, criterion, optimizer,
             "lr": current_lr,
             "epoch": epoch
         })
-        """
-        # ----- early-stopping on val_mae & best checkpoint inside loop -----
-        if val_mae < best_val_mae:
-            best_val_mae = val_mae
-            best_epoch = epoch
-            epochs_no_improve = 0
-            torch.save(model.state_dict(), ckpt_path)
-            wandb.log({"model/best_val_mae": best_val_mae, "model/best_epoch": best_epoch})
-        else:
-            epochs_no_improve += 1
-            if epochs_no_improve >= early_stop_patience:
-                print(f"Early stopping at epoch {epoch} (best val_mae={best_val_mae:.6f} at epoch {best_epoch})")
-                break
-        """
+
 
 def main():
     # -------------------------
@@ -321,7 +332,7 @@ def main():
     test_loader  = DataLoader(test_set,  batch_size=BATCH_SIZE, shuffle=False,
                               num_workers=NUM_WORKERS, pin_memory=PIN,
                               persistent_workers=PERSIST if NUM_WORKERS > 0 else False)
-    #print(f"Steps per epoch (train): {(len(train_set) + BATCH_SIZE - 1)//BATCH_SIZE}, batch_size={BATCH_SIZE}")
+    
     # This is used if drop_last=True.
     steps_per_epoch = len(train_set) // BATCH_SIZE
     print(f"Steps per epoch (train): {steps_per_epoch}, batch_size={BATCH_SIZE}")
@@ -341,7 +352,7 @@ def main():
     # Loss & optimizer & scaler
     criterion = nn.L1Loss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=5e-3, weight_decay=1e-4)
-    #scaler = amp.GradScaler(device_type="cuda", enabled=use_amp)
+    scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-6)
 
     # >>> QUICK 1 EPOCH SANITY RUN WITH TIMING (TEMPORARY) <<<
     import time
@@ -376,9 +387,8 @@ def main():
     # >>> END PROBE BLOCK <<<
 
     # Train, then test
-    train(model, train_loader, val_loader, criterion, optimizer, num_epochs=80, ckpt_path="best_model.pth")
-    #if os.path.isfile("best_model.pth"):
-    #    model.load_state_dict(torch.load("best_model.pth", map_location=device))
+    train(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs=80, start_epoch=0)
+    
     # Please note that test_mae is the raw mean absolute error (MAE) 
     # in the original physical units of the target.
     # test_norm is the normalized MAE, computed after subtracting the dataset mean (y_mean) 
@@ -389,9 +399,20 @@ def main():
     wandb.log({"test/mae": test_mae, "test/norm": test_norm})
     torch.save(model.state_dict(), 'gatma_model_final.pth')
     
-    # Clean up before saving
-    #del test_loader, val_loader, train_loader
-    #del outputs, preds, loss
+    # Save full training state for true resume
+    save_checkpoint(
+        "gatma_checkpoint.pth",
+        model=model,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        scaler=scaler,
+        epoch=80,               # total epochs trained so far in this run
+        y_mean=y_mean,
+        y_std=y_std,
+    )
+
+    
+    # Clean up before saving    
     gc.collect() # From https://docs.python.org/3/library/gc.html
     torch.cuda.empty_cache()
 
