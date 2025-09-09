@@ -2,8 +2,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
 from gpu_transformer import MVTransformer
-from train_0 import MVQM9Data, pooled_pred, evaluate, train, y_mean, y_std, device, use_amp, scaler
-import constants
+from train_0 import MVQM9Data, evaluate, train, device
 import os
 
 def main():
@@ -19,6 +18,7 @@ def main():
     else:
         raise FileNotFoundError(f"{ckpt_path} not found!")
 
+    # Dataset and splits
     full_dataset = MVQM9Data()
     TRAIN_N, VAL_N, TEST_N = 110_000, 10_000, 10_831
     g = torch.Generator().manual_seed(0)
@@ -37,6 +37,17 @@ def main():
     test_loader  = DataLoader(test_set,  batch_size=BATCH_SIZE, shuffle=False,
                               num_workers=NUM_WORKERS, pin_memory=PIN,
                               persistent_workers=PERSIST if NUM_WORKERS > 0 else False)
+
+    # Recompute normalization (y_mean, y_std)
+    with torch.no_grad():
+        ys = []
+        for xb, yb in DataLoader(train_set, batch_size=2048, shuffle=False):
+            ys.append(yb)
+        ys = torch.cat(ys).float()
+    import train_0
+    train_0.y_mean = ys.mean()
+    train_0.y_std  = ys.std().clamp_min(1e-8)
+    print(f"y_mean={train_0.y_mean.item():.6f}, y_std={train_0.y_std.item():.6f}")
 
     # Loss & optimizer
     criterion = nn.L1Loss()
