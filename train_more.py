@@ -6,6 +6,13 @@ from gpu_transformer import MVTransformer
 # Reuse train(), evaluate(), device, and the save/load helpers
 import train_0  
 
+def _move_optimizer_state_to_device(optimizer, device):
+    # Make sure all tensors in the optimizer state live on `device`
+    for state in optimizer.state.values():
+        for k, v in state.items():
+            if torch.is_tensor(v):
+                state[k] = v.to(device)
+
 def main():
     # -------------------------
     # Model & dataset init
@@ -47,6 +54,8 @@ def main():
         start_epoch, y_mean_ckpt, y_std_ckpt = train_0.load_checkpoint(
             full_ckpt_path, model, optimizer, scheduler, train_0.scaler, map_location=train_0.device
         )
+        _move_optimizer_state_to_device(optimizer, train_0.device)
+        
         # Restore normalization globals for train/evaluate
         if y_mean_ckpt is not None and y_std_ckpt is not None:
             train_0.y_mean = y_mean_ckpt
