@@ -13,6 +13,7 @@ import constants
 
 # -------------------------
 # Saving necessary information for the next run.
+# From https://docs.pytorch.org/tutorials/beginner/saving_loading_models.html 
 # -------------------------
 def save_checkpoint(path, model, optimizer, scheduler, scaler, epoch, y_mean, y_std):
     torch.save({
