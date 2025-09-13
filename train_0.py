@@ -388,7 +388,7 @@ def main():
     # >>> END PROBE BLOCK <<<
 
     # Train, then test
-    train(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs=80, start_epoch=0)
+    train(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs=45, start_epoch=0)
     
     # Please note that test_mae is the raw mean absolute error (MAE) 
     # in the original physical units of the target.

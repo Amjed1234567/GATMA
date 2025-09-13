@@ -88,9 +88,9 @@ def main():
         train_0.y_std  = ys.std().clamp_min(1e-8)
         print(f"[Fresh] y_mean={train_0.y_mean.item():.6f}, y_std={train_0.y_std.item():.6f}")
 
-    # Continue training for another 80 epochs
+    # Continue training for another 45 epochs
     train_0.train(model, train_loader, val_loader, criterion, optimizer, scheduler,
-                  num_epochs=80, start_epoch=start_epoch)
+                  num_epochs=45, start_epoch=start_epoch)
 
     # Evaluate
     test_mae, test_norm = train_0.evaluate(model.to(train_0.device), test_loader, criterion)
@@ -104,7 +104,7 @@ def main():
         optimizer=optimizer,
         scheduler=scheduler,
         scaler=train_0.scaler,
-        epoch=start_epoch + 80,   # cumulative epochs trained so far
+        epoch=start_epoch + 45,   # cumulative epochs trained so far
         y_mean=train_0.y_mean,
         y_std=train_0.y_std,
     )
