@@ -116,7 +116,7 @@ def dipole_pred(outputs, inputs, model):
     """
     Compute dipole prediction as:
       For each atom:
-        sum_vector  = sum over channels of vector part (e0,e1,e2,e3) of MV
+        sum_vector  = sum over channels of vector part (e0e1e2, e0e1e3, e0e2e3) of MV
         sum_scalar  = sum over channels of scalar part (1) of MV
         sum_atom    = sum_vector + sum_scalar * X   (X = atom coords from trivector inputs)
       Then sum over atoms -> vector V, and prediction = ||V||_2.
@@ -309,7 +309,7 @@ def main():
     # -------------------------
     # Model & dataset init
     # -------------------------
-    model = MVTransformer(num_layers=2, num_heads=4, channels_per_atom=64)
+    model = MVTransformer(num_layers=4, num_heads=4, channels_per_atom=64)
     full_dataset = MVQM9Data()
     print(f"Full QM9 size reported by wrapper: {len(full_dataset)}")
 
