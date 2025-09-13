@@ -17,7 +17,7 @@ def main():
     # -------------------------
     # Model & dataset init
     # -------------------------
-    model = MVTransformer(num_layers=2, num_heads=4, channels_per_atom=64)
+    model = MVTransformer(num_layers=4, num_heads=4, channels_per_atom=64)
     ckpt_model_path = "gatma_model_final.pth"
     # full state (model + opt + sched + scaler + epoch + stats)
     full_ckpt_path  = "gatma_checkpoint.pth"  
