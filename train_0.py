@@ -407,7 +407,7 @@ def main():
         optimizer=optimizer,
         scheduler=scheduler,
         scaler=scaler,
-        epoch=80,               # total epochs trained so far in this run
+        epoch=45,               # total epochs trained so far in this run
         y_mean=y_mean,
         y_std=y_std,
     )
