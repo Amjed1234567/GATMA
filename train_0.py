@@ -309,7 +309,7 @@ def main():
     # -------------------------
     # Model & dataset init
     # -------------------------
-    model = MVTransformer(num_layers=4, num_heads=4, channels_per_atom=64)
+    model = MVTransformer(num_layers=8, num_heads=4, channels_per_atom=64)
     full_dataset = MVQM9Data()
     print(f"Full QM9 size reported by wrapper: {len(full_dataset)}")
 
@@ -388,7 +388,7 @@ def main():
     # >>> END PROBE BLOCK <<<
 
     # Train, then test
-    train(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs=45, start_epoch=0)
+    train(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs=20, start_epoch=0)
     
     # Please note that test_mae is the raw mean absolute error (MAE) 
     # in the original physical units of the target.
@@ -407,7 +407,7 @@ def main():
         optimizer=optimizer,
         scheduler=scheduler,
         scaler=scaler,
-        epoch=45,               # total epochs trained so far in this run
+        epoch=20,               # total epochs trained so far in this run
         y_mean=y_mean,
         y_std=y_std,
     )
