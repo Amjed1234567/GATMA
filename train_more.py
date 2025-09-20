@@ -42,19 +42,25 @@ def main():
                               num_workers=NUM_WORKERS, pin_memory=PIN,
                               persistent_workers=PERSIST if NUM_WORKERS > 0 else False)
 
-    # Loss, optimizer, scheduler (created before loading so we can load their state)
+    # Loss & criterion
     criterion = nn.L1Loss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-3, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-6)
 
-    # --- Load checkpoint if available (true resume); else fall back to model-only and recompute stats ---
+    # --- Load MODEL and NORMALIZATION STATS from checkpoint ---
     start_epoch = 0
     if os.path.isfile(full_ckpt_path):
-        print(f"Loading full training state from {full_ckpt_path}...")
+        print(f"Loading model and stats from {full_ckpt_path}...")
+        # We create a DUMMY optimizer and scheduler just to load the file,
+        # but we will IGNORE their states and create new ones.
+        dummy_optimizer = torch.optim.AdamW(model.parameters(), lr=0.1)
+        dummy_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(dummy_optimizer, patience=1)
+        dummy_scaler = amp.GradScaler('cuda', enabled=train_0.use_amp)
+        
         start_epoch, y_mean_ckpt, y_std_ckpt = train_0.load_checkpoint(
-            full_ckpt_path, model, optimizer, scheduler, train_0.scaler, map_location=train_0.device
+            full_ckpt_path, model, dummy_optimizer, dummy_scheduler, dummy_scaler, map_location=train_0.device
         )
-        _move_optimizer_state_to_device(optimizer, train_0.device)
+        # We only care about the model, y_mean, and y_std from the checkpoint.
+        # The dummy objects are discarded now.
+        del dummy_optimizer, dummy_scheduler, dummy_scaler
         
         # Restore normalization globals for train/evaluate
         if y_mean_ckpt is not None and y_std_ckpt is not None:
@@ -88,10 +94,17 @@ def main():
         train_0.y_std  = ys.std().clamp_min(1e-8)
         print(f"[Fresh] y_mean={train_0.y_mean.item():.6f}, y_std={train_0.y_std.item():.6f}")
 
-    # Continue training for another 20 epochs
-    train_0.train(model, train_loader, val_loader, criterion, optimizer, scheduler,
-                  num_epochs=20, start_epoch=start_epoch)
+    # --- CREATE A FRESH OPTIMIZER AND SCHEDULER FOR FINE-TUNING ---
+    # KEY: Use a much lower learning rate for fine-tuning
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5, weight_decay=1e-4) # LR 10-100x smaller
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-7)
 
+    # --- Continue training for another 20 epochs ---
+    # We set start_epoch=0 for the new scheduler's purpose.
+    # The model's weights are already loaded from the checkpoint.
+    train_0.train(model, train_loader, val_loader, criterion, optimizer, scheduler,
+                  num_epochs=20, start_epoch=0)
+    
     # Evaluate
     test_mae, test_norm = train_0.evaluate(model.to(train_0.device), test_loader, criterion)
     print(f"[TEST after more training] MAE: {test_mae:.6f} | Norm: {test_norm:.6f}")
