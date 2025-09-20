@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
 from gpu_transformer import MVTransformer
+from torch import amp
 # Reuse train(), evaluate(), device, and the save/load helpers
 import train_0  
 
