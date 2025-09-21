@@ -145,26 +145,39 @@ class MVAttentionHead(nn.Module):
         """
         q = self.query(x); k = self.key(x); v = self.value(x)
         q_masked = q * self.mask; k_masked = k * self.mask
+        wanted_dtype = torch.bfloat16  # or torch.float16 
+        q_masked = q_masked.to(wanted_dtype)
+        k_masked = k_masked.to(wanted_dtype)
+        v        = v.to(wanted_dtype)
         attn_logits = torch.bmm(q_masked, k_masked.transpose(1, 2))
 
         scale = self.base_scale * torch.exp(self.log_scale)
         attn_logits = attn_logits * scale
 
-        # --- Distance-aware bias (memory-safe) ---
+        # --- Distance-aware bias (low-peak-memory, differentiable) ---
         comps = constants.components
         ix, iy, iz = comps.index('e0e1e2'), comps.index('e0e1e3'), comps.index('e0e2e3')
 
-        # positions from trivector coords in the *current-layer* input x
-        R = torch.stack([x[..., ix], x[..., iy], x[..., iz]], dim=-1)  # [B, N, 3]
-        R = R.to(attn_logits.dtype)                                    # keep AMP/bfloat16
+        # Positions from trivector coords in the *current-layer* input x
+        R = torch.stack([x[..., ix], x[..., iy], x[..., iz]], dim=-1)            # [B, N, 3]
+        R = R.to(attn_logits.dtype)  # keep bf16/fp16 if you run under AMP
 
-        # Compute squared Euclidean distances with x^2 + y^2 - 2xy
-        r2 = (R * R).sum(dim=-1, keepdim=True)                         # [B, N, 1]
-        d2 = r2 + r2.transpose(1, 2) - 2.0 * torch.bmm(R, R.transpose(1, 2))  # [B, N, N]
-        d2 = d2.clamp_min_(0)                                          # numerical safety
+        # r2: per-token squared norm, shaped to broadcast over rows/cols of [B,N,N]
+        r2 = (R * R).sum(dim=-1, keepdim=True)  # [B, N, 1]
 
-        attn_logits.add_(-self.gamma * d2)
+        # attn_logits -= gamma * r2 (row bias) and -= gamma * r2^T (col bias)
+        attn_logits.add_(-self.gamma * r2)                  # broadcast across columns
+        attn_logits.add_(-self.gamma * r2.transpose(1, 2))  # broadcast across rows
+
+        # attn_logits += 2*gamma * (R @ R^T) without allocating a separate [B,N,N]
+        # We can’t pass a tensor alpha to baddbmm, so scale the inputs instead:
+        # Let R_s = sqrt(2*gamma) * R, then R_s @ R_s^T = 2*gamma * (R @ R^T).
+        g = torch.sqrt(torch.clamp(2.0 * self.gamma, min=0.0)).to(R.dtype)
+        R_s = R * g
+        attn_logits = torch.baddbmm(attn_logits, R_s, R_s.transpose(1, 2),
+                                    beta=1.0, alpha=1.0)
         # --- End distance-aware bias ---
+
 
 
         # build key mask from input (non-zero tokens)
