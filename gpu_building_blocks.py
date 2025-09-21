@@ -150,17 +150,22 @@ class MVAttentionHead(nn.Module):
         scale = self.base_scale * torch.exp(self.log_scale)
         attn_logits = attn_logits * scale
 
-        # --- Distance-aware bias ---
+        # --- Distance-aware bias (memory-safe) ---
         comps = constants.components
         ix, iy, iz = comps.index('e0e1e2'), comps.index('e0e1e3'), comps.index('e0e2e3')
 
         # positions from trivector coords in the *current-layer* input x
-        R = torch.stack([x[..., ix], x[..., iy], x[..., iz]], dim=-1)   # [B, N, 3]
-        d2 = torch.cdist(R, R).pow(2)
+        R = torch.stack([x[..., ix], x[..., iy], x[..., iz]], dim=-1)  # [B, N, 3]
+        R = R.to(attn_logits.dtype)                                    # keep AMP/bfloat16
 
-        # subtract learnable multiple of squared distance
-        attn_logits = attn_logits - self.gamma * d2
+        # Compute squared Euclidean distances with x^2 + y^2 - 2xy
+        r2 = (R * R).sum(dim=-1, keepdim=True)                         # [B, N, 1]
+        d2 = r2 + r2.transpose(1, 2) - 2.0 * torch.bmm(R, R.transpose(1, 2))  # [B, N, N]
+        d2 = d2.clamp_min_(0)                                          # numerical safety
+
+        attn_logits.add_(-self.gamma * d2)
         # --- End distance-aware bias ---
+
 
         # build key mask from input (non-zero tokens)
         key_mask = (x.abs().sum(dim=-1) > 0)  # [B, N] True = real token
