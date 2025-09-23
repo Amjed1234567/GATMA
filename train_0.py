@@ -157,7 +157,7 @@ def dipole_pred(outputs, inputs, model):
 
     # --- X, Y, Z from channel-wise coefficient ratios ( ... / e0 ) ---
     # safer: scale by a denominator that's never << 1
-    denom = outputs[..., idx_e0].abs() + 1.0  
+    denom = outputs[..., idx_w].sign() * outputs[..., idx_w].abs().clamp(1.0*1e-6)  
     Xc = outputs[..., idx_x] / denom                                   # [B, N, C]
     Yc = outputs[..., idx_y] / denom
     Zc = outputs[..., idx_z] / denom
