@@ -9,6 +9,10 @@ from torch_geometric.datasets import QM9
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch import amp 
 import constants
+import random, numpy as np, torch
+
+random.seed(0); np.random.seed(0); torch.manual_seed(0); 
+if torch.cuda.is_available(): torch.cuda.manual_seed_all(0)
 
 
 # -------------------------
@@ -249,7 +253,9 @@ def train(model, train_loader, val_loader, criterion, optimizer, scheduler,
     model.to(device)    
 
     ema_alpha = 0.9
-    ema_val = None  
+    ema_val = None
+    
+    best_val = float('inf')
 
     for epoch in range(start_epoch + 1, start_epoch + num_epochs + 1):
 
@@ -289,6 +295,12 @@ def train(model, train_loader, val_loader, criterion, optimizer, scheduler,
         else:
             ema_val = ema_alpha * ema_val + (1.0 - ema_alpha) * val_norm
         scheduler.step(ema_val)
+        
+        if ema_val < best_val - 1e-6:
+            best_val = ema_val                        
+            torch.save(model.state_dict(), "best_model.pth")
+        else:
+            epochs_since_best += 1
 
         current_lr = optimizer.param_groups[0]['lr']
 
