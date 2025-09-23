@@ -9,7 +9,8 @@ from torch_geometric.datasets import QM9
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch import amp 
 import constants
-import random, numpy as np, torch
+import random 
+import numpy as np
 
 random.seed(0); np.random.seed(0); torch.manual_seed(0); 
 if torch.cuda.is_available(): torch.cuda.manual_seed_all(0)

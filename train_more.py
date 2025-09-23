@@ -6,18 +6,11 @@ from gpu_transformer import MVTransformer
 from torch import amp
 # Reuse train(), evaluate(), device, and the save/load helpers
 import train_0 
-import random, numpy as np, torch
+import random 
+import numpy as np
 
 random.seed(0); np.random.seed(0); torch.manual_seed(0); 
-if torch.cuda.is_available(): torch.cuda.manual_seed_all(0)
- 
-
-def _move_optimizer_state_to_device(optimizer, device):
-    # Make sure all tensors in the optimizer state live on `device`
-    for state in optimizer.state.values():
-        for k, v in state.items():
-            if torch.is_tensor(v):
-                state[k] = v.to(device)
+if torch.cuda.is_available(): torch.cuda.manual_seed_all(0) 
 
 def main():
     # -------------------------
