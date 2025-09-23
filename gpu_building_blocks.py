@@ -160,7 +160,7 @@ class MVAttentionHead(nn.Module):
 
         # Positions from trivector coords in the *current-layer* input x
         R = torch.stack([x[..., ix], x[..., iy], x[..., iz]], dim=-1)            # [B, N, 3]
-        R = R.to(attn_logits.dtype)  # keep bf16/fp16 if you run under AMP
+        R = R.to(attn_logits.dtype)  # keep bf16/fp16 if it run under AMP
 
         # r2: per-token squared norm, shaped to broadcast over rows/cols of [B,N,N]
         r2 = (R * R).sum(dim=-1, keepdim=True)  # [B, N, 1]
@@ -174,6 +174,7 @@ class MVAttentionHead(nn.Module):
         # Let R_s = sqrt(2*gamma) * R, then R_s @ R_s^T = 2*gamma * (R @ R^T).
         g = torch.sqrt(torch.clamp(2.0 * self.gamma, min=0.0)).to(R.dtype)
         R_s = R * g
+        # https://docs.pytorch.org/docs/stable/generated/torch.baddbmm.html
         attn_logits = torch.baddbmm(attn_logits, R_s, R_s.transpose(1, 2),
                                     beta=1.0, alpha=1.0)
         # --- End distance-aware bias ---
