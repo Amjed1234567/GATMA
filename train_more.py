@@ -5,7 +5,12 @@ from torch.utils.data import DataLoader, random_split
 from gpu_transformer import MVTransformer
 from torch import amp
 # Reuse train(), evaluate(), device, and the save/load helpers
-import train_0  
+import train_0 
+import random, numpy as np, torch
+
+random.seed(0); np.random.seed(0); torch.manual_seed(0); 
+if torch.cuda.is_available(): torch.cuda.manual_seed_all(0)
+ 
 
 def _move_optimizer_state_to_device(optimizer, device):
     # Make sure all tensors in the optimizer state live on `device`
@@ -97,8 +102,8 @@ def main():
 
     # --- CREATE A FRESH OPTIMIZER AND SCHEDULER FOR FINE-TUNING ---
     # KEY: Use a much lower learning rate for fine-tuning
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5, weight_decay=1e-4) # LR 10-100x smaller
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-7)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-5, weight_decay=1e-4) # LR 10-100x smaller
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=3, min_lr=1e-7)
 
     # --- Continue training for another 20 epochs ---
     # We set start_epoch=0 for the new scheduler's purpose.
