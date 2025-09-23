@@ -111,6 +111,10 @@ def main():
     train_0.train(model, train_loader, val_loader, criterion, optimizer, scheduler,
                   num_epochs=20, start_epoch=0)
     
+    # Reload best checkpoint before evaluating
+    print("Loading best_model.pth for evaluation...")
+    model.load_state_dict(torch.load("best_model.pth", map_location=train_0.device))
+    
     # Evaluate
     test_mae, test_norm = train_0.evaluate(model.to(train_0.device), test_loader, criterion)
     print(f"[TEST after more training] MAE: {test_mae:.6f} | Norm: {test_norm:.6f}")

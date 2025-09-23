@@ -298,9 +298,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, scheduler,
         
         if ema_val < best_val - 1e-6:
             best_val = ema_val                        
-            torch.save(model.state_dict(), "best_model.pth")
-        else:
-            epochs_since_best += 1
+            torch.save(model.state_dict(), "best_model.pth") 
 
         current_lr = optimizer.param_groups[0]['lr']
 
@@ -401,6 +399,10 @@ def main():
 
     # Train, then test
     train(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs=20, start_epoch=0)
+    
+    # Reload best checkpoint before evaluating
+    print("Loading best_model.pth for evaluation...")
+    model.load_state_dict(torch.load("best_model.pth", map_location=device))
     
     # Please note that test_mae is the raw mean absolute error (MAE) 
     # in the original physical units of the target.
