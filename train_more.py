@@ -98,11 +98,11 @@ def main():
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-5, weight_decay=1e-4) # LR 10-100x smaller
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=3, min_lr=1e-7)
 
-    # --- Continue training for another 20 epochs ---
+    # --- Continue training for another 30 epochs ---
     # We set start_epoch=0 for the new scheduler's purpose.
     # The model's weights are already loaded from the checkpoint.
     train_0.train(model, train_loader, val_loader, criterion, optimizer, scheduler,
-                  num_epochs=20, start_epoch=0)
+                  num_epochs=30, start_epoch=0)
     
     # Reload best checkpoint before evaluating
     print("Loading best_model.pth for evaluation...")
@@ -120,7 +120,7 @@ def main():
         optimizer=optimizer,
         scheduler=scheduler,
         scaler=train_0.scaler,
-        epoch=start_epoch + 20,   # cumulative epochs trained so far
+        epoch=start_epoch + 30,   # cumulative epochs trained so far
         y_mean=train_0.y_mean,
         y_std=train_0.y_std,
     )
