@@ -155,7 +155,7 @@ def dipole_pred(outputs, inputs, model):
     # Sum over channels: scalar part
     sum_scalar = outputs[..., idx_scalar].sum(dim=2)                   # [B, N]
 
-    # --- X, Y, Z from channel-wise coefficient ratios ( ... / e0 ) ---
+    # --- X, Y, Z from channel-wise coefficient ratios ( ... / e1e2e3 ) ---
     # safer: scale by a denominator that's never << 1
     denom = outputs[..., idx_w].sign() * outputs[..., idx_w].abs().clamp(1.0*1e-6)  
     Xc = outputs[..., idx_x] / denom                                   # [B, N, C]
