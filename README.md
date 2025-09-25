@@ -12,7 +12,7 @@ Just clone the repository. Make sure that you have a virtual environment install
 The file train_0.py is used for training. To resume training with more epochs, you can use train_more.py. 
 If you are using a university computer, you may need to create a .sh file. You will need a GPU to run this code. 
 
-## Citations
+## 3. Citations
  
 If you find this code useful, please cite:
 
@@ -23,7 +23,7 @@ If you find this code useful, please cite:
   year = {2025},
 }
 
-## 3. License
+## 4. License
 
 Redistribution and use in source and binary forms, with or without modification, are permitted (subject to the limitations 
 in the disclaimer below) provided that the following conditions are met:
