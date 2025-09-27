@@ -29,7 +29,7 @@ source /zhome/b5/8/132309/GATMA/venv/bin/activate
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 ### Authenticate wandb
-export WANDB_API_KEY=a916b1f26e04fa87565fd5a12282d2b28fede3df
+export WANDB_API_KEY=XXX
 
 # Sanity check for wandb CLI
 echo "🔎 Checking wandb CLI..."
