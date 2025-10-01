@@ -105,19 +105,17 @@ class GATMAPlanePointModel(nn.Module):
     Wrap MVTransformer -> scalar head.
     Expects input tokens: [B, 2, 16]  (plane, point)
     """
-    def __init__(self, mv_channels=8, depth=4, heads=4, scalar_channels=0):
+    def __init__(self, num_layers=4, num_heads=4, channels_per_atom=1):
         super().__init__()
         self.backbone = MVTransformer(
-            mv_channels=mv_channels,
-            depth=depth,
-            heads=heads,
-            scalar_channels=scalar_channels
+            num_layers=num_layers,
+            num_heads=num_heads,
+            channels_per_atom=channels_per_atom,
         )
         self.readout = ScalarReadout(hidden=64)
 
     def forward(self, x):  # [B, N=2, 16]
-        out = self.backbone(x)
-        y_mv = out[0] if isinstance(out, (tuple, list)) else out
+        y_mv = self.backbone(x)   # returns [B, N*(channels_per_atom), 16]
         return self.readout(y_mv)
 
 
@@ -163,7 +161,7 @@ def main():
             "seed": SEED,
             "plane_normalize": PLANE_NORMALIZE,
             "clip_norm": CLIP_NORM,
-            "model": {"mv_channels": 8, "depth": 4, "heads": 4, "scalar_channels": 0},
+            "model": {"num_layers": 4, "num_heads": 4, "channels_per_atom": 1},
         },
         settings=wandb.Settings(start_method="fork")
     )
@@ -188,7 +186,12 @@ def main():
     test_loader  = DataLoader(test_set,  batch_size=BATCH_SIZE, shuffle=False)
 
     # model
-    model = GATMAPlanePointModel(mv_channels=8, depth=4, heads=4, scalar_channels=0).to(device)
+    model = GATMAPlanePointModel(
+        num_layers=4,
+        num_heads=4,
+        channels_per_atom=1,   # set >1 if you want token expansion
+    ).to(device)
+
 
     if WANDB_WATCH:
         wandb.watch(model, log="all", log_freq=50)
