@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader, random_split
 
-import wandb  # <-- Weights & Biases
+import wandb  # Weights & Biases
 
 # =========================
 # Hyperparameters (edit here)
@@ -16,23 +16,24 @@ BATCH_SIZE       = 256
 EPOCHS           = 30
 LR               = 3e-4
 VAL_FRAC         = 0.10
+TEST_FRAC        = 0.10
 SEED             = 0
 PLANE_NORMALIZE  = True
 CLIP_NORM        = 1.0
 
 PROJECT_NAME     = "GATMA-plane-point"
-RUN_NAME         = None            # or e.g. "mvtr_depth4_heads4"
-WANDB_WATCH      = False           # set True to log grads/params (slower)
+RUN_NAME         = None
+WANDB_WATCH      = False
 TAGS             = ["artificial", "PGA", "distance"]
 NOTES            = "Plane(point) distance sanity-check with MVTransformer."
 
-# (Optional) faster matmul on Ampere+
+# faster matmul on Ampere+
 try:
     torch.set_float32_matmul_precision("high")
 except Exception:
     pass
 
-# --- Your code ---------------------------------------------------------------
+# ---------------------------------------------------------------------
 from artificial_data import create_data        # returns [N,8] with [a,b,c,d,x,y,z,dist]
 import constants
 from gpu_transformer import MVTransformer
@@ -70,15 +71,11 @@ def rows_to_tokens(batch_rows: torch.Tensor, comps, normalize_plane=True) -> Tup
 
     for i in range(B):
         a,b,c,d,x,y,z,_ = batch_rows[i].tolist()
-
         if normalize_plane:
             norm = math.sqrt(a*a + b*b + c*c) + 1e-12
             a, b, c, d = a/norm, b/norm, c/norm, d/norm
-
-        plane_mv = encode_plane_mv(a,b,c,d, comps)
-        point_mv = encode_point_mv(x,y,z, comps)
-        toks[i,0,:] = plane_mv
-        toks[i,1,:] = point_mv
+        toks[i,0,:] = encode_plane_mv(a,b,c,d, comps)
+        toks[i,1,:] = encode_point_mv(x,y,z, comps)
 
     return toks, targets
 
@@ -162,15 +159,11 @@ def main():
             "epochs": EPOCHS,
             "lr": LR,
             "val_frac": VAL_FRAC,
+            "test_frac": TEST_FRAC,
             "seed": SEED,
             "plane_normalize": PLANE_NORMALIZE,
             "clip_norm": CLIP_NORM,
-            "model": {
-                "mv_channels": 8,
-                "depth": 4,
-                "heads": 4,
-                "scalar_channels": 0,
-            },
+            "model": {"mv_channels": 8, "depth": 4, "heads": 4, "scalar_channels": 0},
         },
         settings=wandb.Settings(start_method="fork")
     )
@@ -182,13 +175,17 @@ def main():
     toks, targets = rows_to_tokens(full, comps, normalize_plane=PLANE_NORMALIZE)
     dataset = TensorDataset(toks, targets)
 
-    val_len = int(len(dataset) * VAL_FRAC)
-    train_len = len(dataset) - val_len
+    # 3-way split: 80/10/10
+    N = len(dataset)
+    n_val  = int(N * VAL_FRAC)
+    n_test = int(N * TEST_FRAC)
+    n_train = N - n_val - n_test
     g = torch.Generator().manual_seed(SEED)
-    train_set, val_set = random_split(dataset, [train_len, val_len], generator=g)
+    train_set, val_set, test_set = random_split(dataset, [n_train, n_val, n_test], generator=g)
 
     train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
     val_loader   = DataLoader(val_set,   batch_size=BATCH_SIZE, shuffle=False)
+    test_loader  = DataLoader(test_set,  batch_size=BATCH_SIZE, shuffle=False)
 
     # model
     model = GATMAPlanePointModel(mv_channels=8, depth=4, heads=4, scalar_channels=0).to(device)
@@ -203,6 +200,7 @@ def main():
     best_val = float("inf")
     ckpt_path = "gatma_plane_point_best.pt"
 
+    # -------- training loop --------
     for epoch in range(1, EPOCHS + 1):
         model.train()
         running_loss = 0.0
@@ -230,7 +228,6 @@ def main():
 
         print(f"Epoch {epoch:03d} | train_mae={train_mae:.6f} | val_mae={val_mae:.6f} | val_rmse={val_rmse:.6f} | lr={current_lr:.2e}")
 
-        # ---- W&B log per epoch
         wandb.log({
             "train/mae": train_mae,
             "val/mae": val_mae,
@@ -239,7 +236,7 @@ def main():
             "epoch": epoch,
         })
 
-        # ---- Save & upload best
+        # save & upload best
         if val_mae < best_val:
             best_val = val_mae
             torch.save(model.state_dict(), ckpt_path)
@@ -248,6 +245,19 @@ def main():
             art = wandb.Artifact("gatma_plane_point_model", type="model")
             art.add_file(ckpt_path)
             wandb.log_artifact(art)
+
+    # -------- reload best before testing --------
+    map_location = device if device.type == "cpu" else {"cuda:0": "cuda:0"}
+    state = torch.load(ckpt_path, map_location=device)
+    model.load_state_dict(state)
+    model.to(device)
+    model.eval()
+
+    # final test evaluation (best model)
+    test_rmse, test_mae = evaluate(model, test_loader, device)
+    print("Final test set results: RMSE={:.6f}, MAE={:.6f}".format(test_rmse, test_mae))
+    wandb.summary["test_mae"] = test_mae
+    wandb.summary["test_rmse"] = test_rmse
 
     print("Best val MAE:", best_val)
     run.finish()
