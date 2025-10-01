@@ -218,7 +218,11 @@ class MVMultiHeadAttention(nn.Module):
             outs.append(h(x))             # each is [B,T,16]
         multihead_outputs = torch.stack(outs, dim=-2).reshape(B, T, H*D)  # [B,T,H*16]
         
+        # Cast activations to match the Linear weight’s dtype (usually float32)
+        multihead_outputs = multihead_outputs.to(self.output_proj.weight.dtype)
+        
         return self.output_proj(multihead_outputs)
+
 
 
 
