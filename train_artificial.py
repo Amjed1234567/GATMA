@@ -27,6 +27,9 @@ WANDB_WATCH      = False
 TAGS             = ["artificial", "PGA", "distance"]
 NOTES            = "Plane(point) distance sanity-check with MVTransformer."
 
+# ---- precision control ----
+USE_BF16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+
 # faster matmul on Ampere+
 try:
     torch.set_float32_matmul_precision("high")
@@ -127,6 +130,10 @@ def evaluate(model, loader, device):
         for toks, targets in loader:
             toks = toks.to(device)
             targets = targets.to(device)
+            
+            if next(model.parameters()).dtype == torch.bfloat16:
+                toks = toks.to(torch.bfloat16)
+                
             preds = model(toks)
             diff = preds - targets
             mse += torch.sum(diff * diff).item()
@@ -189,8 +196,11 @@ def main():
     model = GATMAPlanePointModel(
         num_layers=4,
         num_heads=4,
-        channels_per_atom=1,   # set >1 if you want token expansion
+        channels_per_atom=1,
     ).to(device)
+
+    if USE_BF16:
+        model = model.to(torch.bfloat16)
 
 
     if WANDB_WATCH:
@@ -213,8 +223,13 @@ def main():
             toks_b = toks_b.to(device)
             targets_b = targets_b.to(device)
 
+            if USE_BF16:
+                toks_b = toks_b.to(torch.bfloat16)
+
             pred  = model(toks_b)
-            loss  = crit(pred, targets_b)
+
+            # compute loss in float32 for numerical stability
+            loss  = crit(pred.float(), targets_b.float())
 
             opt.zero_grad(set_to_none=True)
             loss.backward()
