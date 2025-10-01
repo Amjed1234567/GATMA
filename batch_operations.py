@@ -77,9 +77,15 @@ def geometric_product_batch(x, y):
     # Shape: (batch_size, num_tokens, len(constants.components), len(constants.components))  
     xy_ij = x_i * y_j      
 
-    G = _on_device(GEOMETRIC_PRODUCT_TENSOR, x.device)
+    #G = _on_device(GEOMETRIC_PRODUCT_TENSOR, x.device)
+    #return torch.einsum('btij,ijk->btk', xy_ij, G)
+    # make sure G matches the input’s dtype/device
+    G = G.to(dtype=xy_ij.dtype, device=xy_ij.device)
     
     return torch.einsum('btij,ijk->btk', xy_ij, G)
+
+    
+    
 
 
 def build_dual_matrix():
