@@ -25,5 +25,3 @@ def create_data(data_size:int):
         data_list.append(sample)
 
     return torch.FloatTensor(data_list)
-
-
