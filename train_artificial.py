@@ -7,6 +7,7 @@ import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader, random_split
 
 import wandb  # Weights & Biases
+import baseline
 
 # =========================
 # Hyperparameters (edit here)
@@ -280,6 +281,7 @@ def main():
     wandb.summary["test_rmse"] = test_rmse
 
     print("Best val MAE:", best_val)
+    print("Baseline MAE:", baseline.calculate_mae(full))
     run.finish()
 
 
