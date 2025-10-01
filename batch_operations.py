@@ -5,6 +5,50 @@
 import torch
 import constants
 from multivector import Multivector
+from constants import components, product_table  # blades + symbolic products  :contentReference[oaicite:0]{index=0}
+
+# Build the 16×16×16 geometric product tensor from the symbolic table once.
+def _build_geometric_product_tensor():
+    n = len(components)  # 16
+    idx = {b: i for i, b in enumerate(components)}
+    G = torch.zeros(n, n, n, dtype=torch.float32)
+
+    for left_blade, rights in product_table.items():
+        i = idx[left_blade]
+        for right_blade, result in rights.items():
+            j = idx[right_blade]
+
+            if result == '0':
+                continue
+
+            # sign and blade parsing: examples: '1', '-1', '1e2', '-1e0e1e3'
+            sign = 1.0
+            s = result
+            if s.startswith('-'):
+                sign = -1.0
+                s = s[1:]  # strip '-'
+
+            # strip leading '1' when present (e.g. '1e2' -> 'e2')
+            if s.startswith('1') and len(s) > 1:
+                s = s[1:]
+
+            # Now s is one of the canonical blade labels in `components`, e.g. '1', 'e2', 'e0e1e3', etc.
+            k = idx[s]
+            G[i, j, k] = sign
+
+    return G
+
+# Base (CPU/float32) table; we’ll cast/copy per device/dtype as needed at runtime.
+G_BASE = _build_geometric_product_tensor()
+
+# Small cache so we don’t re-to() every batch
+_GEOPROD_CACHE = {}
+def _get_G_for(x_dtype, x_device):
+    key = (x_dtype, x_device)
+    if key not in _GEOPROD_CACHE:
+        _GEOPROD_CACHE[key] = G_BASE.to(dtype=x_dtype, device=x_device)
+    return _GEOPROD_CACHE[key]
+
 
 
 #device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -77,12 +121,10 @@ def geometric_product_batch(x, y):
     # Shape: (batch_size, num_tokens, len(constants.components), len(constants.components))  
     xy_ij = x_i * y_j      
 
-    #G = _on_device(GEOMETRIC_PRODUCT_TENSOR, x.device)
-    #return torch.einsum('btij,ijk->btk', xy_ij, G)
-    # make sure G matches the input’s dtype/device
-    G = G.to(dtype=xy_ij.dtype, device=xy_ij.device)
+    G_cast = _get_G_for(xy_ij.dtype, xy_ij.device)
     
-    return torch.einsum('btij,ijk->btk', xy_ij, G)
+    return torch.einsum('btij,ijk->btk', xy_ij, G_cast)
+
 
     
     
