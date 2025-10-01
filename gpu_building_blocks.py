@@ -145,7 +145,7 @@ class MVAttentionHead(nn.Module):
         """
         q = self.query(x); k = self.key(x); v = self.value(x)
         q_masked = q * self.mask; k_masked = k * self.mask
-        wanted_dtype = torch.bfloat16  # or torch.float16 
+        wanted_dtype = x.dtype
         q_masked = q_masked.to(wanted_dtype)
         k_masked = k_masked.to(wanted_dtype)
         v        = v.to(wanted_dtype)
@@ -160,7 +160,7 @@ class MVAttentionHead(nn.Module):
 
         # Positions from trivector coords in the *current-layer* input x
         R = torch.stack([x[..., ix], x[..., iy], x[..., iz]], dim=-1)            # [B, N, 3]
-        R = R.to(attn_logits.dtype)  # keep bf16/fp16 if it run under AMP
+        R = R.to(wanted_dtype)
 
         # r2: per-token squared norm, shaped to broadcast over rows/cols of [B,N,N]
         r2 = (R * R).sum(dim=-1, keepdim=True)  # [B, N, 1]

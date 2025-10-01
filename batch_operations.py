@@ -66,47 +66,6 @@ def _on_device(t_cpu: torch.Tensor, dev):
 # <<<<<<  >>>>>>>
 
 
-def build_geometric_product_tensor():
-    """Calculating the geometric product tensor to be used 
-        in the below batch version of the geometric product.                 
-
-        Returns:
-             x (torch.tensor): Shape: (len(constants.components), 
-             len(constants.components), len(constants.components))).
-     """        
-    n = len(constants.components)
-    G = torch.zeros(n, n, n)
-    for i, a in enumerate(constants.components):
-        for j, b in enumerate(constants.components):
-            product = constants.product_table[a][b]
-            if product == "0":
-                continue
-            sign = 1
-            if product == "1":
-                sign = 1
-            if product == "-1":
-                sign = -1                
-            if product.startswith("-") and len(product) > 2:
-                sign = -1
-                product = product[2:]
-            if product.startswith("1") and len(product) > 1:
-                product = product[1:]
-
-            # Scalar result: "1" or "-1"
-            if product == "-1" or product == "1":
-                k = constants.components.index('1')
-                G[i, j, k] = sign
-            elif product in constants.components:
-                k = constants.components.index(product)
-                G[i, j, k] = sign
-    
-    return G
-
-# Shape: (len(constants.components), len(constants.components), len(constants.components))).
-#GEOMETRIC_PRODUCT_TENSOR = build_geometric_product_tensor().to(device)
-GEOMETRIC_PRODUCT_TENSOR = build_geometric_product_tensor()  # stay on CPU
-
-
 def geometric_product_batch(x, y):
     """
     Args:
@@ -123,10 +82,7 @@ def geometric_product_batch(x, y):
 
     G_cast = _get_G_for(xy_ij.dtype, xy_ij.device)
     
-    return torch.einsum('btij,ijk->btk', xy_ij, G_cast)
-
-
-    
+    return torch.einsum('btij,ijk->btk', xy_ij, G_cast)    
     
 
 
