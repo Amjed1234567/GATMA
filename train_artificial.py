@@ -109,7 +109,7 @@ class GATMAPlanePointModel(nn.Module):
     Wrap MVTransformer -> scalar head.
     Expects input tokens: [B, 2, 16]  (plane, point)
     """
-    def __init__(self, num_layers=4, num_heads=4, channels_per_atom=1):
+    def __init__(self, num_layers=4, num_heads=4, channels_per_atom=64):
         super().__init__()
         self.backbone = MVTransformer(
             num_layers=num_layers,
@@ -171,7 +171,7 @@ def main():
             "seed": SEED,
             "plane_normalize": PLANE_NORMALIZE,
             "clip_norm": CLIP_NORM,
-            "model": {"num_layers": 4, "num_heads": 4, "channels_per_atom": 1},
+            "model": {"num_layers": 4, "num_heads": 4, "channels_per_atom": 64},
         },
         settings=wandb.Settings(start_method="fork")
     )
@@ -199,7 +199,7 @@ def main():
     model = GATMAPlanePointModel(
         num_layers=4,
         num_heads=4,
-        channels_per_atom=1,
+        channels_per_atom=64,
     ).to(device)
 
     #if USE_BF16:
