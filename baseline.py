@@ -16,8 +16,6 @@ mean_ = np.array(dipole_moment).mean()
 # Subtract mean from all the dipole moments.
 new_values = [r - mean_ for r in dipole_moment]
 
-# Subtract the two lists.
-result = np.array(new_values) - np.array(dipole_moment)
 # print("The mean absolute error is ...")
 # print(np.absolute(result).mean())
 
@@ -39,8 +37,6 @@ def calculate_mae(data:torch.FloatTensor):
         dist_list.append(data[i][7].item())
     # Subtract mean from all the distances..
     new_values = [r - mean_dist(data) for r in dist_list]
-    # Subtract the two lists.
-    result = np.array(new_values) - np.array(dist_list)
-    
-    return np.absolute(result).mean()
+        
+    return np.absolute(new_values).mean()
 
