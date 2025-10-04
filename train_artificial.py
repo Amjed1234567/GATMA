@@ -15,7 +15,7 @@ import baseline
 DATA_SIZE        = 20000
 BATCH_SIZE       = 256
 EPOCHS           = 50
-LR               = 1e-2
+LR               = 5e-1
 VAL_FRAC         = 0.10
 TEST_FRAC        = 0.10
 SEED             = 0
