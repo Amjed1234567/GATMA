@@ -9,6 +9,55 @@ from torch.utils.data import TensorDataset, DataLoader, random_split
 import wandb  # Weights & Biases
 import baseline
 
+# --- Rigid motions in PGA (helpers used only for data augmentation) ---
+from multivector import Multivector
+import random
+
+def make_rotor(axis=None, deg=None):
+    # axis ∈ {'x','y','z'}; deg ∈ [0, 360)
+    if axis is None:
+        axis = random.choice(['x','y','z'])
+    if deg is None:
+        deg = random.uniform(0.0, 360.0)
+    theta = math.radians(deg)
+    R = torch.zeros(16)
+    comps = constants.components
+    R[comps.index('1')] = math.cos(theta/2.0)
+    if axis == 'x':
+        R[comps.index('e2e3')] = math.sin(theta/2.0)      # e23
+    elif axis == 'y':
+        R[comps.index('e1e3')] = -math.sin(theta/2.0)     # e13 = -e31
+    else:  # 'z'
+        R[comps.index('e1e2')] = math.sin(theta/2.0)      # e12
+    return Multivector(R)
+
+
+def rotate_tokens_cpu(toks_cpu, rotor: Multivector):
+    B = toks_cpu.size(0)
+    out = []
+    for i in range(B):
+        pair = []
+        for j in range(2):
+            M = Multivector(toks_cpu[i, j, :])
+            Mr = M.rotate(rotor)  # sandwich R M R^{-1}
+            pair.append(Mr.coefficients)
+        out.append(torch.stack(pair, dim=0))
+    return torch.stack(out, dim=0)  # [B,2,16]
+
+
+def translate_tokens_cpu(toks_cpu, dx, dy, dz):
+    B = toks_cpu.size(0)
+    out = []
+    for i in range(B):
+        pair = []
+        for j in range(2):
+            M = Multivector(toks_cpu[i, j, :])
+            Mt = M.translate(dx, dy, dz)  # sandwich with translator
+            pair.append(Mt.coefficients)
+        out.append(torch.stack(pair, dim=0))
+    return torch.stack(out, dim=0)  # [B,2,16]
+
+
 # =========================
 # Hyperparameters (edit here)
 # =========================
@@ -226,10 +275,33 @@ def main():
 
             with torch.autocast(device_type="cuda", dtype=torch.float32, enabled=False):
                 pred = model(toks_b.float())
-            loss = crit(pred, targets_b.float())
+            #loss = crit(pred, targets_b.float())
+            # original loss
+            loss_main = crit(pred, targets_b.float())
+
+            # --- build a randomly rotated + translated version of the SAME batch ---
+            # sample a random rotor and a modest random translation
+            R = make_rotor()                             # random axis & angle
+            tx, ty, tz = [random.uniform(-2.0, 2.0) for _ in range(3)]
+
+            toks_cpu = toks_b.detach().cpu()
+            toks_rot = rotate_tokens_cpu(toks_cpu, R)
+            toks_rt  = translate_tokens_cpu(toks_rot, tx, ty, tz)
+            toks_rt  = toks_rt.to(toks_b.device)
+
+            # second forward pass on transformed tokens (same targets!)
+            pred_rt = model(toks_rt.float())
+
+            # invariance terms
+            loss_aug   = crit(pred_rt, targets_b.float())               # should match GT
+            lambda_inv = 0.5
+            loss_cons  = (pred_rt - pred).abs().mean() * lambda_inv     # consistency
+
+            loss = loss_main + loss_aug + loss_cons
 
 
-            opt.zero_grad(set_to_none=True)
+
+            #opt.zero_grad(set_to_none=True)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=CLIP_NORM)
             opt.step()
