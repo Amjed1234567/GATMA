@@ -4,14 +4,14 @@ import torch
 
 def create_one_sample():
     # Plane parameters.
-    a = rnd.randrange(-10,10, 1)
-    b = rnd.randrange(-10,10, 1)
-    c = rnd.randrange(-10,10, 1)
-    d = rnd.randrange(-10,10, 1)
+    a = rnd.choice([i for i in range(-10,10) if i not in [0]])
+    b = rnd.choice([i for i in range(-10,10) if i not in [0]])
+    c = rnd.choice([i for i in range(-10,10) if i not in [0]])
+    d = rnd.choice([i for i in range(-10,10) if i not in [0]])
     # Point parameters.
-    x = rnd.randrange(-10,10, 1)
-    y = rnd.randrange(-10,10, 1)
-    z = rnd.randrange(-10,10, 1)
+    x = rnd.choice([i for i in range(-10,10) if i not in [0]])
+    y = rnd.choice([i for i in range(-10,10) if i not in [0]])
+    z = rnd.choice([i for i in range(-10,10) if i not in [0]])
     # Euclidian distance between point and plane.
     dist = abs(a*x + b*y + c*z + d) / math.sqrt(a**2 + b**2 + c**2)
 
