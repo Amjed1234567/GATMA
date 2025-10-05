@@ -13,6 +13,9 @@ import baseline
 from multivector import Multivector
 import random
 
+import time
+
+
 def make_rotor(axis=None, deg=None):
     # axis ∈ {'x','y','z'}; deg ∈ [0, 360)
     if axis is None:
@@ -56,6 +59,38 @@ def translate_tokens_cpu(toks_cpu, dx, dy, dz):
             pair.append(Mt.coefficients)
         out.append(torch.stack(pair, dim=0))
     return torch.stack(out, dim=0)  # [B,2,16]
+
+
+def make_random_plane():
+    """Random mirror plane Π = d*e0 + a*e1 + b*e2 + c*e3 with unit (a,b,c)."""
+    comps = constants.components
+    mv = torch.zeros(16)
+    # random unit normal
+    v = torch.randn(3)
+    v = v / (v.norm() + 1e-12)
+    a, b, c = v.tolist()
+    # small random offset
+    d = float(torch.empty(1).uniform_(-2.0, 2.0).item())
+    mv[comps.index('e0')] = d
+    mv[comps.index('e1')] = a
+    mv[comps.index('e2')] = b
+    mv[comps.index('e3')] = c
+    return Multivector(mv)
+
+
+def reflect_tokens_cpu(toks_cpu, mirror: Multivector):
+    """Reflect both tokens (plane, point) with the SAME mirror plane Π."""
+    B = toks_cpu.size(0)
+    out = []
+    for i in range(B):
+        pair = []
+        for j in range(2):
+            M = Multivector(toks_cpu[i, j, :])
+            Mr = M.reflect(mirror)  # -Π M Π^{-1}
+            pair.append(Mr.coefficients)
+        out.append(torch.stack(pair, dim=0))
+    return torch.stack(out, dim=0)  # [B,2,16]
+
 
 
 # =========================
@@ -259,9 +294,84 @@ def main():
 
     best_val = float("inf")
     ckpt_path = "gatma_plane_point_best.pt"
+    
+    # >>> QUICK 1 EPOCH SANITY RUN WITH TIMING (TEMPORARY) <<<
+    import copy
+
+    print("\n[Sanity check] Running 1 quick epoch for timing (no state change)...")
+    model.train()
+
+    # save & restore so the probe does not change training
+    _model_state = copy.deepcopy(model.state_dict())
+    _opt_state   = copy.deepcopy(opt.state_dict())
+
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    epoch_t0 = time.time()
+
+    running_loss_probe = 0.0
+    n_obs_probe = 0
+
+    with torch.enable_grad():
+        for toks_b, targets_b in train_loader:
+            toks_b = toks_b.to(device, non_blocking=True)
+            targets_b = targets_b.to(device)
+
+            # ---- forward (original) ----
+            with torch.autocast(device_type="cuda", dtype=torch.float32, enabled=False):
+                pred = model(toks_b.float())
+            loss_main = crit(pred, targets_b.float())
+
+            # ---- rigid motions: rotate + translate ----
+            R = make_rotor()
+            tx, ty, tz = [random.uniform(-2.0, 2.0) for _ in range(3)]
+            toks_cpu = toks_b.detach().cpu()
+            toks_rot = rotate_tokens_cpu(toks_cpu, R)
+            toks_rt  = translate_tokens_cpu(toks_rot, tx, ty, tz).to(toks_b.device)
+
+            pred_rt = model(toks_rt.float())
+
+            # ---- reflection ----
+            mirror = make_random_plane()
+            toks_ref = reflect_tokens_cpu(toks_cpu, mirror).to(toks_b.device)
+            pred_ref = model(toks_ref.float())
+
+            # ---- losses (same as training) ----
+            loss_aug  = crit(pred_rt, targets_b.float())
+            loss_ref  = crit(pred_ref, targets_b.float())
+            lambda_inv = 0.5
+            loss_cons = lambda_inv * ((pred_rt - pred).abs().mean() +
+                                    (pred_ref - pred).abs().mean())
+            loss = loss_main + loss_aug + loss_ref + loss_cons
+
+            # ---- backward + step (to match true cost) ----
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=CLIP_NORM)
+            opt.step()
+
+            running_loss_probe += loss.item() * targets_b.numel()
+            n_obs_probe        += targets_b.numel()
+
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    epoch_time_probe = time.time() - epoch_t0
+    avg_loss_probe   = running_loss_probe / max(n_obs_probe, 1)
+    print(f"[Sanity check] 1-epoch time: {epoch_time_probe:.2f}s | Avg loss: {avg_loss_probe:.6f}")
+
+    # restore state so training starts clean
+    model.load_state_dict(_model_state)
+    opt.load_state_dict(_opt_state)
+    model.zero_grad(set_to_none=True)
+    del _model_state, _opt_state
+    torch.cuda.empty_cache()
+    # >>> END PROBE BLOCK <<<
+
+    
 
     # -------- training loop --------
     for epoch in range(1, EPOCHS + 1):
+        epoch_t0 = time.time()
         model.train()
         running_loss = 0.0
         n_obs = 0
@@ -292,16 +402,26 @@ def main():
             # second forward pass on transformed tokens (same targets!)
             pred_rt = model(toks_rt.float())
 
-            # invariance terms
-            loss_aug   = crit(pred_rt, targets_b.float())               # should match GT
+            # --- add a reflection, using a random mirror plane Π ---
+            mirror = make_random_plane()
+            toks_ref_cpu = reflect_tokens_cpu(toks_cpu, mirror)
+            toks_ref      = toks_ref_cpu.to(toks_b.device)
+            pred_ref      = model(toks_ref.float())
+
+            # losses
+            loss_main = crit(pred, targets_b.float())
+            loss_aug  = crit(pred_rt, targets_b.float())
+            loss_ref  = crit(pred_ref, targets_b.float())
+
             lambda_inv = 0.5
-            loss_cons  = (pred_rt - pred).abs().mean() * lambda_inv     # consistency
+            cons_rt  = (pred_rt  - pred).abs().mean()
+            cons_ref = (pred_ref - pred).abs().mean()
+            loss_cons = lambda_inv * (cons_rt + cons_ref)
 
-            loss = loss_main + loss_aug + loss_cons
+            loss = loss_main + loss_aug + loss_ref + loss_cons
 
 
-
-            #opt.zero_grad(set_to_none=True)
+            opt.zero_grad(set_to_none=True)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=CLIP_NORM)
             opt.step()
@@ -313,8 +433,14 @@ def main():
         train_mae = running_loss / max(n_obs, 1)
         val_rmse, val_mae = evaluate(model, val_loader, device)
         current_lr = sched.get_last_lr()[0]
+        
+        epoch_seconds = time.time() - epoch_t0
+        if epoch == 1:
+            first_epoch_seconds = epoch_seconds
 
-        print(f"Epoch {epoch:03d} | train_mae={train_mae:.6f} | val_mae={val_mae:.6f} | val_rmse={val_rmse:.6f} | lr={current_lr:.2e}")
+        print(f"Epoch {epoch:03d} | train_mae={train_mae:.6f} | "
+          f"val_mae={val_mae:.6f} | val_rmse={val_rmse:.6f} | "
+          f"lr={current_lr:.2e} | epoch_time={epoch_seconds:.2f}s")
 
         wandb.log({
             "train/mae": train_mae,
