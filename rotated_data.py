@@ -43,21 +43,17 @@ def rows_to_tokens(batch_rows, comps, normalize_plane=True):
 # -----------------------
 # Readout head + wrapper (matches training)
 # -----------------------
-class ScalarReadout(nn.Module):
-    def __init__(self, hidden=64):
+class InvariantReadout(nn.Module):
+    def __init__(self):
         super().__init__()
-        self.proj = nn.Linear(16, hidden)
-        self.act  = nn.GELU()
-        self.mlp  = nn.Sequential(
-            nn.Linear(hidden, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, 1),
-        )
-    def forward(self, x):           # [B, N, 16]
-        h = self.act(self.proj(x))  # [B, N, H]
-        h = h.mean(dim=1)           # [B, H]
-        out = self.mlp(h).squeeze(-1)
-        return out
+        self.scale = nn.Parameter(torch.tensor(1.0))
+        self.bias  = nn.Parameter(torch.tensor(0.0))
+        self.idx_scalar = constants.components.index('1')
+    def forward(self, x):  # x: [B, N, 16]
+        s = x[..., self.idx_scalar]      # [B, N] grade-0 only
+        s = s.mean(dim=1)                # invariant token reduction
+        return (s * self.scale + self.bias)
+    
 
 class GATMAPlanePointModel(nn.Module):
     def __init__(self, num_layers=4, num_heads=4, channels_per_atom=1):
@@ -67,7 +63,7 @@ class GATMAPlanePointModel(nn.Module):
             num_heads=num_heads,
             channels_per_atom=channels_per_atom,
         )
-        self.readout = ScalarReadout(hidden=64)
+        self.readout = InvariantReadout(hidden=64)
     def forward(self, x):  # x: [B, N=2, 16]
         y_mv = self.backbone(x)
         return self.readout(y_mv)
@@ -138,16 +134,16 @@ def main():
 
     # 6) Compare
     diffs = (preds_rot - preds_orig).abs()
-    print(f"Δ(pred after rot vs orig): mean={diffs.mean().item():.6e}, max={diffs.max().item():.6e}")
+    print(f"(pred after rot vs orig): mean={diffs.mean().item():.6e}, max={diffs.max().item():.6e}")
     # Optional: also compare to ground-truth distance (should match before & after)
     mae_orig = (preds_orig - targets).abs().mean().item()
     mae_rot  = (preds_rot  - targets).abs().mean().item()
     print(f"MAE vs GT: orig={mae_orig:.6f} | rotated={mae_rot:.6f}")
 
     # Show a few examples
-    for i in range(5):
-        print(f"[{i:03d}] gt={targets[i].item():.5f} | pred_orig={preds_orig[i].item():.5f} | "
-              f"pred_rot={preds_rot[i].item():.5f} | Δ={abs(preds_rot[i].item()-preds_orig[i].item()):.3e}")
+    #for i in range(5):
+        #print(f"[{i:03d}] gt={targets[i].item():.5f} | pred_orig={preds_orig[i].item():.5f} | "
+              #f"pred_rot={preds_rot[i].item():.5f} | Δ={abs(preds_rot[i].item()-preds_orig[i].item()):.3e}")
 
 if __name__ == "__main__":
     main()
