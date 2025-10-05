@@ -1,19 +1,9 @@
 # ============================================================
-# GATMA — Simple plane–point distance training + test invariance check (v2)
-# Dataset split: 80% train / 10% val / 10% test
-# Steps:
-# (1)  Build original multivectors
-# (2)  Train the model on the train split (monitor val)
-# (3)  Print FINAL MAE on TEST ORIGINALS
-# (4)  Make TRANSLATED test set (dx=dy=dz=5)      -> trans_data
-# (5)  Predict on trans_data
-# (6)  Print mean |pred_trans - ground_truth|
-# (7)  Make ROTATED test set (45° about Z)        -> rot_data
-# (8)  Predict on rot_data
-# (9)  Print mean |pred_rot - ground_truth|
-# (10) Make REFLECTED test set (fixed plane)      -> ref_data
-# (11) Predict on ref_data
-# (12) Print mean |pred_ref - ground_truth|
+# GATMA — Plane–Point Distance: Training + Test Invariance (v2 + Option A)
+# ------------------------------------------------------------
+# Toggle invariance training (augmentation + consistency):
+#   ENABLE_INVAR_TRAINING = True  -> train with rotate/translate/reflect + consistency
+#   ENABLE_INVAR_TRAINING = False -> plain training on originals only
 # ============================================================
 
 import math
@@ -24,14 +14,14 @@ import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
 
-# --- project modules  ---
+# --- project modules ---
 import constants
 from artificial_data import create_data        # -> [N,8] rows: [a,b,c,d,x,y,z,dist]
 from gpu_transformer import MVTransformer
 from multivector import Multivector
 
 # --------------------
-# Hyperparams
+# (A) Global config
 # --------------------
 SEED        = 0
 DATA_SIZE   = 20000
@@ -41,6 +31,10 @@ LR          = 3e-4
 PLANE_NORMALIZE = True
 CKPT_PATH   = "gatma_plane_point_best.pt"
 CLIP_NORM   = 1.0
+
+# --- Option A toggle ---
+ENABLE_INVAR_TRAINING = True     # <--- set False to compare plain training
+LAMBDA_INV            = 0.5      # weight for consistency |f(T·X)-f(X)|
 
 # ============================================================
 # (Helper) Encoding: Euclidean plane/point -> PGA multivectors
@@ -84,7 +78,7 @@ def rows_to_tokens(rows: torch.Tensor, comps, normalize_plane=True) -> Tuple[tor
     return toks, targets
 
 # ============================================================
-# (Helper) Invariant readout head (grade-0 only)
+# (Helper) Model with invariant readout (grade-0 only)
 # ============================================================
 
 class InvariantReadout(nn.Module):
@@ -112,7 +106,7 @@ class GATMAPlanePointModel(nn.Module):
         return self.readout(y_mv)
 
 # ============================================================
-# (Helper) Rigid motions (fixed ones for test eval)
+# (Helper) Rigid motions (train-time + test-time)
 # ============================================================
 
 def translate_tokens_cpu(toks_cpu, dx, dy, dz):
@@ -135,6 +129,10 @@ def make_fixed_rotor_z(deg=45.0):
     R[comps.index('e1e2')] = math.sin(theta/2.0)  # rotor about z
     return Multivector(R)
 
+def make_random_rotor_z(max_deg=180.0):
+    deg = random.uniform(-max_deg, max_deg)
+    return make_fixed_rotor_z(deg=deg)
+
 def rotate_tokens_cpu(toks_cpu, rotor: Multivector):
     B = toks_cpu.size(0)
     out = []
@@ -149,7 +147,7 @@ def rotate_tokens_cpu(toks_cpu, rotor: Multivector):
 
 def make_fixed_mirror_plane():
     """
-    Fixed mirror = d*e0 + a*e1 + b*e2 + c*e3 (unit normal).
+    Fixed mirror Π = d*e0 + a*e1 + b*e2 + c*e3 (unit normal).
     Here: mirror across plane x + 2y + 3z + d = 0 with d = 1.5
     """
     comps = constants.components
@@ -171,13 +169,20 @@ def reflect_tokens_cpu(toks_cpu, mirror: Multivector):
         pair = []
         for j in range(2):
             M = Multivector(toks_cpu[i,j,:])
-            Mr = M.reflect(mirror)  # -R M R^{-1}
+            Mr = M.reflect(mirror)  # -Π M Π^{-1}
             pair.append(Mr.coefficients)
         out.append(torch.stack(pair, dim=0))
     return torch.stack(out, dim=0)
 
+def rotate_translate_tokens_cpu(toks_cpu):
+    R = make_random_rotor_z()
+    tx, ty, tz = [random.uniform(-2.0, 2.0) for _ in range(3)]
+    toks_rot = rotate_tokens_cpu(toks_cpu, R)
+    toks_rt  = translate_tokens_cpu(toks_rot, tx, ty, tz)
+    return toks_rt
+
 # ============================================================
-# (Helper) MAE on a token set
+# (Helper) Metric: MAE on a token set
 # ============================================================
 
 @torch.no_grad()
@@ -187,26 +192,20 @@ def mae_on_tokens(model, toks: torch.Tensor, targets: torch.Tensor, device) -> f
     return (preds - targets.to(device).float()).abs().mean().item()
 
 # ============================================================
-# Main
+# (1) Build ORIGINAL multivectors
 # ============================================================
 
-def main():
-    # seeds & device
-    torch.manual_seed(SEED)
-    random.seed(SEED)
-    try:
-        torch.set_float32_matmul_precision("high")
-    except Exception:
-        pass
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def build_originals():
     comps = constants.components
-
-    # --------------------------------------------------------
-    # (1) Build ORIGINAL multivectors
-    # --------------------------------------------------------
     full = create_data(DATA_SIZE)              # [N,8]
     toks_all, y_all = rows_to_tokens(full, comps, normalize_plane=PLANE_NORMALIZE)
+    return toks_all, y_all
 
+# ============================================================
+# (2) Train the model (80/10/10 split) — WITH optional invariance training
+# ============================================================
+
+def train_model(toks_all, y_all, device):
     # Split: 80 / 10 / 10
     N = toks_all.size(0)
     n_train = max(int(0.8 * N), 1)
@@ -226,9 +225,6 @@ def main():
     val_loader   = DataLoader(TensorDataset(toks_val, y_val),
                               batch_size=BATCH_SIZE, shuffle=False, drop_last=False)
 
-    # --------------------------------------------------------
-    # (2) Train the model
-    # --------------------------------------------------------
     model = GATMAPlanePointModel(num_layers=4, num_heads=4, channels_per_atom=1).to(device)
     opt   = torch.optim.AdamW(model.parameters(), lr=LR)
     crit  = nn.L1Loss()
@@ -241,12 +237,36 @@ def main():
         for xb, yb in train_loader:
             xb = xb.to(device)
             yb = yb.to(device)
+
             opt.zero_grad(set_to_none=True)
+
+            # ----- original -----
             pred = model(xb.float()).view(-1)
-            loss = crit(pred, yb.float())
+            loss_main = crit(pred, yb.float())
+
+            if ENABLE_INVAR_TRAINING:
+                # ----- rotated+translated (same batch) -----
+                toks_cpu = xb.detach().cpu()
+                toks_rt  = rotate_translate_tokens_cpu(toks_cpu).to(device)
+                pred_rt  = model(toks_rt.float()).view(-1)
+
+                # ----- fixed reflection (same mirror as test) -----
+                mirror   = make_fixed_mirror_plane()
+                toks_ref = reflect_tokens_cpu(toks_cpu, mirror).to(device)
+                pred_ref = model(toks_ref.float()).view(-1)
+
+                # ----- invariance losses -----
+                loss_aug  = crit(pred_rt,  yb.float()) + crit(pred_ref, yb.float())
+                loss_cons = LAMBDA_INV * ((pred_rt - pred).abs().mean() +
+                                          (pred_ref - pred).abs().mean())
+                loss = loss_main + loss_aug + loss_cons
+            else:
+                loss = loss_main
+
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=CLIP_NORM)
             opt.step()
+
             running += loss.item() * yb.numel()
             n += yb.numel()
 
@@ -256,56 +276,91 @@ def main():
             best_val = val_mae
             torch.save(model.state_dict(), CKPT_PATH)
 
-        if epoch % 5 == 0 or epoch == 1:
-            print(f"Epoch {epoch:03d} | train_loss≈{running/max(n,1):.6f} | val_MAE={val_mae:.6f}")
+        if epoch % 5 == 0 or epoch == 1 or epoch == EPOCHS:
+            tag = "INV" if ENABLE_INVAR_TRAINING else "PLAIN"
+            print(f"[{tag}] Epoch {epoch:03d} | train_loss≈{running/max(n,1):.6f} | val_MAE={val_mae:.6f}")
 
     # load best on val before final test
     model.load_state_dict(torch.load(CKPT_PATH, map_location=device))
+    return model, toks_train, y_train, toks_val, y_val, toks_test, y_test
 
-    # --------------------------------------------------------
-    # (3) FINAL MAE on TEST ORIGINALS
-    # --------------------------------------------------------
+# ============================================================
+# (3) Print FINAL MAE on TEST originals
+# ============================================================
+
+def step3_final_mae_test_originals(model, toks_test, y_test, device):
     mae_test_orig = mae_on_tokens(model, toks_test, y_test, device)
     print(f"(3) FINAL MAE on TEST originals: {mae_test_orig:.6f}")
 
-    # --------------------------------------------------------
-    # (4) Make TRANSLATED test set (dx=dy=dz=5)  -> trans_data
-    # --------------------------------------------------------
+# ============================================================
+# (4) Make TRANSLATED test set (dx=dy=dz=5)  -> trans_data
+# (5) Predict on trans_data
+# (6) Print mean |pred_trans - ground_truth|
+# ============================================================
+
+def steps4_6_translated(model, toks_test, y_test, device):
     toks_test_cpu = toks_test.detach().cpu()
     trans_data = translate_tokens_cpu(toks_test_cpu, dx=5.0, dy=5.0, dz=5.0)
-
-    # --------------------------------------------------------
-    # (5) Predict on trans_data
-    # --------------------------------------------------------
-    # (6) Print mean |pred_trans - ground_truth|
     mae_trans = mae_on_tokens(model, trans_data, y_test, device)
     print(f"(6) MAE on TEST translated (dx=dy=dz=5): {mae_trans:.6f}")
 
-    # --------------------------------------------------------
-    # (7) Make ROTATED test set (angle=45° about Z)  -> rot_data
-    # --------------------------------------------------------
+# ============================================================
+# (7) Make ROTATED test set (45° about Z)  -> rot_data
+# (8) Predict on rot_data
+# (9) Print mean |pred_rot - ground_truth|
+# ============================================================
+
+def steps7_9_rotated(model, toks_test, y_test, device):
+    toks_test_cpu = toks_test.detach().cpu()
     Rz45 = make_fixed_rotor_z(deg=45.0)
     rot_data = rotate_tokens_cpu(toks_test_cpu, Rz45)
-
-    # --------------------------------------------------------
-    # (8) Predict on rot_data
-    # --------------------------------------------------------
-    # (9) Print mean |pred_rot - ground_truth|
     mae_rot = mae_on_tokens(model, rot_data, y_test, device)
     print(f"(9) MAE on TEST rotated (z, 45 deg): {mae_rot:.6f}")
 
-    # --------------------------------------------------------
-    # (10) Make REFLECTED test set (fixed plane)   -> ref_data
-    # --------------------------------------------------------
+# ============================================================
+# (10) Make REFLECTED test set (fixed plane) -> ref_data
+# (11) Predict on ref_data
+# (12) Print mean |pred_ref - ground_truth|
+# ============================================================
+
+def steps10_12_reflected(model, toks_test, y_test, device):
+    toks_test_cpu = toks_test.detach().cpu()
     mirror = make_fixed_mirror_plane()
     ref_data = reflect_tokens_cpu(toks_test_cpu, mirror)
-
-    # --------------------------------------------------------
-    # (11) Predict on ref_data
-    # --------------------------------------------------------
-    # (12) Print mean |pred_ref - ground_truth|
     mae_ref = mae_on_tokens(model, ref_data, y_test, device)
     print(f"(12) MAE on TEST reflected (fixed plane): {mae_ref:.6f}")
+
+# ============================================================
+# Main
+# ============================================================
+
+def main():
+    # seeds & device
+    torch.manual_seed(SEED)
+    random.seed(SEED)
+    try:
+        torch.set_float32_matmul_precision("high")
+    except Exception:
+        pass
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # (1) originals
+    toks_all, y_all = build_originals()
+
+    # (2) train (optionally with invariance augmentation + consistency)
+    model, toks_train, y_train, toks_val, y_val, toks_test, y_test = train_model(toks_all, y_all, device)
+
+    # (3)
+    step3_final_mae_test_originals(model, toks_test, y_test, device)
+
+    # (4) (5) (6)
+    steps4_6_translated(model, toks_test, y_test, device)
+
+    # (7) (8) (9)
+    steps7_9_rotated(model, toks_test, y_test, device)
+
+    # (10) (11) (12)
+    steps10_12_reflected(model, toks_test, y_test, device)
 
 if __name__ == "__main__":
     main()
