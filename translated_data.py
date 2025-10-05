@@ -128,7 +128,7 @@ def main():
     for i in range(5):
         print(f"[{i:03d}] gt={targets[i].item():.5f} | "
               f"pred_orig={preds_orig[i].item():.5f} | "
-              f"pred_tr={preds_tr[i].item():: .5f} | "
+              f"pred_tr={preds_tr[i].item():.5f} | "
               f"Δ={abs(preds_tr[i].item()-preds_orig[i].item()):.3e}")
 
 if __name__ == "__main__":
