@@ -36,8 +36,8 @@ from multivector import Multivector
 SEED        = 0
 DATA_SIZE   = 20000
 BATCH_SIZE  = 256
-EPOCHS      = 25
-LR          = 3e-4
+EPOCHS      = 100
+LR          = 1e-2
 PLANE_NORMALIZE = True
 CKPT_PATH   = "gatma_plane_point_best.pt"
 CLIP_NORM   = 1.0
