@@ -63,7 +63,7 @@ class GATMAPlanePointModel(nn.Module):
             num_heads=num_heads,
             channels_per_atom=channels_per_atom,
         )
-        self.readout = InvariantReadout(hidden=64)
+        self.readout = InvariantReadout()
     def forward(self, x):  # x: [B, N=2, 16]
         y_mv = self.backbone(x)
         return self.readout(y_mv)

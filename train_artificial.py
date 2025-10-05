@@ -85,23 +85,18 @@ def rows_to_tokens(batch_rows: torch.Tensor, comps, normalize_plane=True) -> Tup
 
 
 # --- Readout head -----------------------------------------------------
-class ScalarReadout(nn.Module):
-    """ Map [B, N, 16] -> scalar via linear+GELU, mean over tokens, MLP """
-    def __init__(self, hidden=64):
+class InvariantReadout(nn.Module):
+    """Invariant scalar head: use only the grade-0 ('1') component."""
+    def __init__(self):
         super().__init__()
-        self.proj = nn.Linear(16, hidden)
-        self.act = nn.GELU()
-        self.mlp = nn.Sequential(
-            nn.Linear(hidden, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, 1),
-        )
+        self.scale = nn.Parameter(torch.tensor(1.0))
+        self.bias  = nn.Parameter(torch.tensor(0.0))
+        self.idx_scalar = constants.components.index('1')
 
     def forward(self, x):  # x: [B, N, 16]
-        h = self.act(self.proj(x))     # [B, N, H]
-        h = h.mean(dim=1)              # [B, H]
-        out = self.mlp(h).squeeze(-1)  # [B]
-        return out
+        s = x[..., self.idx_scalar]  # [B, N] scalar part only
+        s = s.mean(dim=1)            # token reduction (invariant)
+        return s * self.scale + self.bias
 
 
 class GATMAPlanePointModel(nn.Module):
@@ -116,7 +111,7 @@ class GATMAPlanePointModel(nn.Module):
             num_heads=num_heads,
             channels_per_atom=channels_per_atom,
         )
-        self.readout = ScalarReadout(hidden=64)
+        self.readout = InvariantReadout()
 
     def forward(self, x):  # [B, N=2, 16]
         y_mv = self.backbone(x)   # returns [B, N*(channels), 16]
