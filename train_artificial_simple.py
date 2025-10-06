@@ -34,7 +34,7 @@ if USE_WANDB:
 SEED        = 0
 DATA_SIZE   = 20000
 BATCH_SIZE  = 256
-EPOCHS      = 100
+EPOCHS      = 25
 LR          = 3e-4
 PLANE_NORMALIZE = True
 CKPT_PATH   = "gatma_plane_point_best.pt"
