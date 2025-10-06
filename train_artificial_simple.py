@@ -35,14 +35,14 @@ SEED        = 0
 DATA_SIZE   = 20000
 BATCH_SIZE  = 256
 EPOCHS      = 25
-LR          = 3e-4
+LR          = 1e-4
 PLANE_NORMALIZE = True
 CKPT_PATH   = "gatma_plane_point_best.pt"
 CLIP_NORM   = 1.0
 
 # --- Option A toggle ---
 ENABLE_INVAR_TRAINING = True     # <--- set False to compare plain training
-LAMBDA_INV            = 0.5      # Control the equivariance. 
+LAMBDA_INV            = 1.0      # Control the equivariance. 
 
 # ============================================================
 # (Helper) Encoding: Euclidean plane/point -> PGA multivectors
@@ -184,7 +184,7 @@ def reflect_tokens_cpu(toks_cpu, mirror: Multivector):
 
 def rotate_translate_tokens_cpu(toks_cpu):
     R = make_random_rotor_z()
-    tx, ty, tz = [random.uniform(-2.0, 2.0) for _ in range(3)]
+    tx, ty, tz = [random.uniform(-5.0, 5.0) for _ in range(3)]
     toks_rot = rotate_tokens_cpu(toks_cpu, R)
     toks_rt  = translate_tokens_cpu(toks_rot, tx, ty, tz)
     return toks_rt
