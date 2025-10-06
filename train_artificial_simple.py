@@ -20,6 +20,14 @@ from artificial_data import create_data        # -> [N,8] rows: [a,b,c,d,x,y,z,d
 from gpu_transformer import MVTransformer
 from multivector import Multivector
 
+import time
+import os
+
+USE_WANDB = True  # flip to False to disable logging 
+if USE_WANDB:
+    import wandb
+
+
 # --------------------
 # (A) Global config
 # --------------------
@@ -34,7 +42,7 @@ CLIP_NORM   = 1.0
 
 # --- Option A toggle ---
 ENABLE_INVAR_TRAINING = True     # <--- set False to compare plain training
-LAMBDA_INV            = 0.5      # weight for consistency |f(T·X)-f(X)|
+LAMBDA_INV            = 0.5      # Control the equivariance. 
 
 # ============================================================
 # (Helper) Encoding: Euclidean plane/point -> PGA multivectors
@@ -221,17 +229,23 @@ def train_model(toks_all, y_all, device):
     toks_test,  y_test  = toks_all[test_idx],  y_all[test_idx]
 
     train_loader = DataLoader(TensorDataset(toks_train, y_train),
-                              batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
+                              batch_size=BATCH_SIZE, shuffle=True, drop_last=True, pin_memory=True)
     val_loader   = DataLoader(TensorDataset(toks_val, y_val),
-                              batch_size=BATCH_SIZE, shuffle=False, drop_last=False)
+                              batch_size=BATCH_SIZE, shuffle=False, drop_last=False, pin_memory=True)
 
     model = GATMAPlanePointModel(num_layers=4, num_heads=4, channels_per_atom=1).to(device)
     opt   = torch.optim.AdamW(model.parameters(), lr=LR)
     crit  = nn.L1Loss()
+    
+    if USE_WANDB:
+        wandb.watch(model, log="gradients", log_freq=100, log_graph=False)   
 
     best_val = float("inf")
     for epoch in range(1, EPOCHS+1):
+        epoch_t0 = time.time()
         model.train()
+        # Reuse the SAME mirror plane for this entire epoch
+        fixed_mirror = make_fixed_mirror_plane()
         running = 0.0
         n = 0
         for xb, yb in train_loader:
@@ -251,8 +265,7 @@ def train_model(toks_all, y_all, device):
                 pred_rt  = model(toks_rt.float()).view(-1)
 
                 # ----- fixed reflection (same mirror as test) -----
-                mirror   = make_fixed_mirror_plane()
-                toks_ref = reflect_tokens_cpu(toks_cpu, mirror).to(device)
+                toks_ref = reflect_tokens_cpu(toks_cpu, fixed_mirror).to(device)
                 pred_ref = model(toks_ref.float()).view(-1)
 
                 # ----- invariance losses -----
@@ -275,11 +288,30 @@ def train_model(toks_all, y_all, device):
         if val_mae < best_val:
             best_val = val_mae
             torch.save(model.state_dict(), CKPT_PATH)
+            
+            if USE_WANDB:
+                # Log checkpoint as an artifact (best on val)
+                art = wandb.Artifact("gatma_plane_point_best", type="model")
+                art.add_file(CKPT_PATH)
+                wandb.log_artifact(art)
+
 
         if epoch % 5 == 0 or epoch == 1 or epoch == EPOCHS:
             tag = "INV" if ENABLE_INVAR_TRAINING else "PLAIN"
             print(f"[{tag}] Epoch {epoch:03d} | train_loss≈{running/max(n,1):.6f} | val_MAE={val_mae:.6f}")
+            epoch_time = time.time() - epoch_t0
 
+            if USE_WANDB:
+                wandb.log({
+                    "epoch": epoch,
+                    "train/loss_epoch_mean": running / max(n, 1),
+                    "val/mae": val_mae,
+                    "time/epoch_seconds": epoch_time,
+                    "tag": "INV" if ENABLE_INVAR_TRAINING else "PLAIN",
+                }, step=epoch)
+
+            
+            
     # load best on val before final test
     model.load_state_dict(torch.load(CKPT_PATH, map_location=device))
     return model, toks_train, y_train, toks_val, y_val, toks_test, y_test
@@ -291,6 +323,9 @@ def train_model(toks_all, y_all, device):
 def step3_final_mae_test_originals(model, toks_test, y_test, device):
     mae_test_orig = mae_on_tokens(model, toks_test, y_test, device)
     print(f"(3) FINAL MAE on TEST originals: {mae_test_orig:.6f}")
+    if 'wandb' in globals() and USE_WANDB:
+        wandb.log({"test/mae_orig": mae_test_orig})
+
 
 # ============================================================
 # (4) Make TRANSLATED test set (dx=dy=dz=5)  -> trans_data
@@ -303,6 +338,9 @@ def steps4_6_translated(model, toks_test, y_test, device):
     trans_data = translate_tokens_cpu(toks_test_cpu, dx=5.0, dy=5.0, dz=5.0)
     mae_trans = mae_on_tokens(model, trans_data, y_test, device)
     print(f"(6) MAE on TEST translated (dx=dy=dz=5): {mae_trans:.6f}")
+    if 'wandb' in globals() and USE_WANDB:
+        wandb.log({"test/mae_translated": mae_trans})
+
 
 # ============================================================
 # (7) Make ROTATED test set (45° about Z)  -> rot_data
@@ -316,6 +354,9 @@ def steps7_9_rotated(model, toks_test, y_test, device):
     rot_data = rotate_tokens_cpu(toks_test_cpu, Rz45)
     mae_rot = mae_on_tokens(model, rot_data, y_test, device)
     print(f"(9) MAE on TEST rotated (z, 45 deg): {mae_rot:.6f}")
+    if 'wandb' in globals() and USE_WANDB:
+        wandb.log({"test/mae_rotated": mae_rot})
+
 
 # ============================================================
 # (10) Make REFLECTED test set (fixed plane) -> ref_data
@@ -329,6 +370,9 @@ def steps10_12_reflected(model, toks_test, y_test, device):
     ref_data = reflect_tokens_cpu(toks_test_cpu, mirror)
     mae_ref = mae_on_tokens(model, ref_data, y_test, device)
     print(f"(12) MAE on TEST reflected (fixed plane): {mae_ref:.6f}")
+    if 'wandb' in globals() and USE_WANDB:
+        wandb.log({"test/mae_reflected": mae_ref})
+
 
 # ============================================================
 # Main
@@ -343,6 +387,31 @@ def main():
     except Exception:
         pass
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # --- Weights & Biases init ---
+    if USE_WANDB:
+        wandb.init(
+            project=os.environ.get("WANDB_PROJECT", "GATMA"),
+            entity=os.environ.get("WANDB_ENTITY", None),  
+            config={
+                "seed": SEED,
+                "data_size": DATA_SIZE,
+                "batch_size": BATCH_SIZE,
+                "epochs": EPOCHS,
+                "lr": LR,
+                "plane_normalize": PLANE_NORMALIZE,
+                "clip_norm": CLIP_NORM,
+                "enable_invar_training": ENABLE_INVAR_TRAINING,
+                "lambda_inv": LAMBDA_INV,
+                "model": {
+                    "num_layers": 4,
+                    "num_heads": 4,
+                    "channels_per_atom": 1,
+                },
+            },
+            name="gatma-plane-point-invariant",  
+            notes="Training with rotate/translate/reflect + consistency" if ENABLE_INVAR_TRAINING else "Plain training",
+        )    
 
     # (1) originals
     toks_all, y_all = build_originals()
@@ -361,6 +430,9 @@ def main():
 
     # (10) (11) (12)
     steps10_12_reflected(model, toks_test, y_test, device)
+    
+    if USE_WANDB:
+        wandb.finish()
 
 if __name__ == "__main__":
     main()
