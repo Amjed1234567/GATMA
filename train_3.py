@@ -299,7 +299,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, scheduler,
         
         if ema_val < best_val - 1e-6:
             best_val = ema_val                        
-            torch.save(model.state_dict(), "best_model.pth") 
+            torch.save(model.state_dict(), "best_model_3.pth") 
 
         current_lr = optimizer.param_groups[0]['lr']
 
@@ -403,7 +403,7 @@ def main():
     
     # Reload best checkpoint before evaluating
     print("Loading best_model.pth for evaluation...")
-    model.load_state_dict(torch.load("best_model.pth", map_location=device))
+    model.load_state_dict(torch.load("best_model_3.pth", map_location=device))
     
     # Please note that test_mae is the raw mean absolute error (MAE) 
     # in the original physical units of the target.
@@ -413,7 +413,7 @@ def main():
     test_mae, test_norm = evaluate(model.to(device), test_loader, criterion)
     print(f"[TEST] MAE: {test_mae:.6f} | Norm: {test_norm:.6f}")
     wandb.log({"test/mae": test_mae, "test/norm": test_norm})
-    torch.save(model.state_dict(), 'gatma_model_final.pth')
+    torch.save(model.state_dict(), 'gatma_model_final_3.pth')
     
     # Save full training state for true resume
     save_checkpoint(
