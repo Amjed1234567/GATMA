@@ -37,7 +37,7 @@ BATCH_SIZE  = 256
 EPOCHS      = 25
 LR          = 3e-4
 PLANE_NORMALIZE = True
-CKPT_PATH   = "gatma_plane_point_best.pt"
+CKPT_PATH   = "gatma_plane_point_best_9.pt"
 CLIP_NORM   = 1.0
 
 # --- Option A toggle ---
