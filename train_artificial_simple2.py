@@ -35,14 +35,14 @@ SEED        = 0
 DATA_SIZE   = 20000
 BATCH_SIZE  = 256
 EPOCHS      = 25
-LR          = 3e-4
+LR          = 1e-4
 PLANE_NORMALIZE = True
 CKPT_PATH   = "gatma_plane_point_best.pt"
 CLIP_NORM   = 1.0
 
 # --- Option A toggle ---
 ENABLE_INVAR_TRAINING = True     # <--- set False to compare plain training
-LAMBDA_INV            = 0.3      # Control the equivariance. 
+LAMBDA_INV            = 0.6      # Control the equivariance. 
 
 # ============================================================
 # (Helper) Encoding: Euclidean plane/point -> PGA multivectors
@@ -235,7 +235,9 @@ def train_model(toks_all, y_all, device):
 
     model = GATMAPlanePointModel(num_layers=4, num_heads=4, channels_per_atom=1).to(device)
     opt   = torch.optim.AdamW(model.parameters(), lr=LR)
-    crit  = nn.L1Loss()
+    #crit  = nn.L1Loss()
+    crit = nn.SmoothL1Loss(beta=1.0)
+
     
     if USE_WANDB:
         wandb.watch(model, log="gradients", log_freq=100, log_graph=False)   
@@ -270,8 +272,12 @@ def train_model(toks_all, y_all, device):
 
                 # ----- invariance losses -----
                 loss_aug  = crit(pred_rt,  yb.float()) + crit(pred_ref, yb.float())
-                loss_cons = LAMBDA_INV * ((pred_rt - pred).abs().mean() +
-                                          (pred_ref - pred).abs().mean())
+                #loss_cons = LAMBDA_INV * ((pred_rt - pred).abs().mean() +
+                                          #(pred_ref - pred).abs().mean())
+                progress = epoch / EPOCHS
+                lam = LAMBDA_INV * progress     # 0 → LAMBDA_INV
+                loss_cons = lam * ((pred_rt - pred).abs().mean() + (pred_ref - pred).abs().mean())
+
                 loss = loss_main + loss_aug + loss_cons
             else:
                 loss = loss_main
