@@ -34,15 +34,20 @@ if USE_WANDB:
 SEED        = 0
 DATA_SIZE   = 20000
 BATCH_SIZE  = 256
-EPOCHS      = 25
-LR          = 1e-4
+EPOCHS      = 50
+LR          = 3e-4
+WEIGHT_DECAY = 1e-4
+# Allow overriding from env (so we can sweep without copying files)
+LR = float(os.getenv("LR", LR))
+WEIGHT_DECAY = float(os.getenv("WEIGHT_DECAY", 0.0))  # default 0.0 if not set
+
 PLANE_NORMALIZE = True
-CKPT_PATH   = "gatma_plane_point_best.pt"
+CKPT_PATH   = "gatma_plane_point_best_8.pt"
 CLIP_NORM   = 1.0
 
 # --- Option A toggle ---
 ENABLE_INVAR_TRAINING = True     # <--- set False to compare plain training
-LAMBDA_INV            = 0.4      # Control the equivariance. 
+LAMBDA_INV            = 0.6      # Control the equivariance. 
 
 # ============================================================
 # (Helper) Encoding: Euclidean plane/point -> PGA multivectors
@@ -137,9 +142,19 @@ def make_fixed_rotor_z(deg=45.0):
     R[comps.index('e1e2')] = math.sin(theta/2.0)  # rotor about z
     return Multivector(R)
 
-def make_random_rotor_z(max_deg=180.0):
-    deg = random.uniform(-max_deg, max_deg)
-    return make_fixed_rotor_z(deg=deg)
+def make_random_rotor_any(max_deg=180.0):
+    axis = random.choice(['x','y','z'])
+    deg  = random.uniform(-max_deg, max_deg)
+    theta = math.radians(deg)
+    R = torch.zeros(16)
+    R[constants.components.index('1')] = math.cos(theta/2)
+    if axis == 'x':
+        R[constants.components.index('e2e3')] = math.sin(theta/2)
+    elif axis == 'y':
+        R[constants.components.index('e1e3')] = -math.sin(theta/2)
+    else:
+        R[constants.components.index('e1e2')] = math.sin(theta/2)
+    return Multivector(R)
 
 def rotate_tokens_cpu(toks_cpu, rotor: Multivector):
     B = toks_cpu.size(0)
@@ -183,11 +198,10 @@ def reflect_tokens_cpu(toks_cpu, mirror: Multivector):
     return torch.stack(out, dim=0)
 
 def rotate_translate_tokens_cpu(toks_cpu):
-    R = make_random_rotor_z()
+    R = make_random_rotor_any()
     tx, ty, tz = [random.uniform(-5.0, 5.0) for _ in range(3)]
     toks_rot = rotate_tokens_cpu(toks_cpu, R)
-    toks_rt  = translate_tokens_cpu(toks_rot, tx, ty, tz)
-    return toks_rt
+    return translate_tokens_cpu(toks_rot, tx, ty, tz)
 
 # ============================================================
 # (Helper) Metric: MAE on a token set
@@ -234,7 +248,7 @@ def train_model(toks_all, y_all, device):
                               batch_size=BATCH_SIZE, shuffle=False, drop_last=False, pin_memory=True)
 
     model = GATMAPlanePointModel(num_layers=4, num_heads=4, channels_per_atom=1).to(device)
-    opt   = torch.optim.AdamW(model.parameters(), lr=LR)
+    opt   = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     #crit  = nn.L1Loss()
     crit = nn.SmoothL1Loss(beta=1.0)
 
@@ -394,6 +408,9 @@ def main():
         pass
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
+    # This run name will be used by Weights & Biases.
+    run_name = f"LR={LR}_WD={WEIGHT_DECAY}"
+    
     # --- Weights & Biases init ---
     if USE_WANDB:
         wandb.init(
@@ -415,7 +432,8 @@ def main():
                     "channels_per_atom": 1,
                 },
             },
-            name="gatma-plane-point-invariant",  
+            #name="gatma-plane-point-invariant",
+            name=run_name,    
             notes="Training with rotate/translate/reflect + consistency" if ENABLE_INVAR_TRAINING else "Plain training",
         )    
 
