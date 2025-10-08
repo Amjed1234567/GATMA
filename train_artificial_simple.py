@@ -265,8 +265,8 @@ def train_model(toks_all, y_all, device):
         running = 0.0
         n = 0
         for xb, yb in train_loader:
-            xb = xb.to(device)
-            yb = yb.to(device)
+            xb = xb.to(device, non_blocking=True)
+            yb = yb.to(device, non_blocking=True)
 
             opt.zero_grad(set_to_none=True)
 
