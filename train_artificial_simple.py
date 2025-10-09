@@ -42,7 +42,9 @@ LR = float(os.getenv("LR", LR))
 WEIGHT_DECAY = float(os.getenv("WEIGHT_DECAY", 0.0))  # default 0.0 if not set
 
 PLANE_NORMALIZE = True
-CKPT_PATH   = "gatma_plane_point_best_8.pt"
+# Generate a model filename that includes LR and WD
+CKPT_PATH = f"plane_point_LR={LR}_WD={WEIGHT_DECAY}.pt"
+
 CLIP_NORM   = 1.0
 
 # --- Option A toggle ---
