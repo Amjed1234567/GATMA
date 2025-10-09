@@ -1,7 +1,6 @@
 # ============================================================
-# GATMA — Plane–Point Distance: Training + Test Invariance (v2 + Option A)
+# GATMA — Plane–Point Distance: Training + Test Invariance
 # ------------------------------------------------------------
-# Toggle invariance training (augmentation + consistency):
 #   ENABLE_INVAR_TRAINING = True  -> train with rotate/translate/reflect + consistency
 #   ENABLE_INVAR_TRAINING = False -> plain training on originals only
 # ============================================================
@@ -37,7 +36,7 @@ BATCH_SIZE  = 256
 EPOCHS      = 50
 LR          = 3e-4
 WEIGHT_DECAY = 1e-4
-# Allow overriding from env (so we can sweep without copying files)
+# Allow overriding from env 
 LR = float(os.getenv("LR", LR))
 WEIGHT_DECAY = float(os.getenv("WEIGHT_DECAY", 0.0))  # default 0.0 if not set
 
@@ -47,7 +46,6 @@ CKPT_PATH = f"plane_point_LR={LR}_WD={WEIGHT_DECAY}.pt"
 
 CLIP_NORM   = 1.0
 
-# --- Option A toggle ---
 ENABLE_INVAR_TRAINING = True     # <--- set False to compare plain training
 LAMBDA_INV            = 0.6      # Control the equivariance. 
 
@@ -172,7 +170,7 @@ def rotate_tokens_cpu(toks_cpu, rotor: Multivector):
 
 def make_fixed_mirror_plane():
     """
-    Fixed mirror Π = d*e0 + a*e1 + b*e2 + c*e3 (unit normal).
+    Fixed mirror  = d*e0 + a*e1 + b*e2 + c*e3.
     Here: mirror across plane x + 2y + 3z + d = 0 with d = 1.5
     """
     comps = constants.components
@@ -194,7 +192,7 @@ def reflect_tokens_cpu(toks_cpu, mirror: Multivector):
         pair = []
         for j in range(2):
             M = Multivector(toks_cpu[i,j,:])
-            Mr = M.reflect(mirror)  # -Π M Π^{-1}
+            Mr = M.reflect(mirror)  # -R M R^{-1}
             pair.append(Mr.coefficients)
         out.append(torch.stack(pair, dim=0))
     return torch.stack(out, dim=0)
@@ -442,7 +440,7 @@ def main():
     # (1) originals
     toks_all, y_all = build_originals()
 
-    # (2) train (optionally with invariance augmentation + consistency)
+    # (2) train 
     model, toks_train, y_train, toks_val, y_val, toks_test, y_test = train_model(toks_all, y_all, device)
 
     # (3)
