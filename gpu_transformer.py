@@ -7,13 +7,22 @@ from gpu_building_blocks import (
 # -------------------------
 # Transformer Block 
 # -------------------------
+# gpu_transformer.py
+
+import torch
+import torch.nn as nn
+from gpu_building_blocks import (
+    MVLayerNorm, MVMultiHeadAttention, MVFeedforwardBlock, MVLinear
+)
+
+# gpu_transformer.py
 class MVTransformerBlock(nn.Module):
     def __init__(self, num_heads: int):
         super().__init__()
         self.norm1 = MVLayerNorm()
-        self.attn = MVMultiHeadAttention(num_heads)
+        self.attn  = MVMultiHeadAttention(num_heads)
         self.norm2 = MVLayerNorm()
-        self.ff = MVFeedforwardBlock()
+        self.ff    = MVFeedforwardBlock()
 
     def forward(self, x):
         # Attention + residual
@@ -22,10 +31,10 @@ class MVTransformerBlock(nn.Module):
         x = self.attn(x)
         x = x + res
 
-        # Feedforward + residual
-        res = x
-        x = self.norm2(x)
-        x = self.ff(x)
+        # Feedforward + residual (pass pre-norm res as reference)
+        res = x                        # <- pre-norm for the FF path
+        x = self.norm2(x)              # normalized stream (not used inside FF anymore)
+        x = self.ff(x, reference=res)  # FF works entirely on `res`
         x = x + res
         return x
 
