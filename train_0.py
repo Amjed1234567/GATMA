@@ -15,6 +15,12 @@ import numpy as np
 random.seed(0); np.random.seed(0); torch.manual_seed(0); 
 if torch.cuda.is_available(): torch.cuda.manual_seed_all(0)
 
+# ---- Hyperparams via environment (for HPC sweeps) ----
+# Defaults match current script values
+ENV_LR = float(os.getenv("LR", "1e-2"))
+ENV_WEIGHT_DECAY = float(os.getenv("WEIGHT_DECAY", "1e-5"))
+print(f"[config] LR={ENV_LR}  WEIGHT_DECAY={ENV_WEIGHT_DECAY}")
+
 
 # -------------------------
 # Saving necessary information for the next run.
@@ -241,15 +247,18 @@ def train(model, train_loader, val_loader, criterion, optimizer, scheduler,
     os.environ["WANDB_CONSOLE"] = "wrap"
 
     wandb.init(
-        project="G301-Transformer",
+        project=os.getenv("WANDB_PROJECT", "G301-Transformer"),
         config={
             "epochs": num_epochs,
             "batch_size": train_loader.batch_size,
-            "lr": optimizer.param_groups[0]['lr'],
+            "lr": ENV_LR,
+            "weight_decay": ENV_WEIGHT_DECAY,
             "model": "MVTransformer",
-            "split": {"train": len(train_loader.dataset), "val": len(val_loader.dataset)}
-        }
+            "split": {"train": len(train_loader.dataset), "val": len(val_loader.dataset)},
+        },
+        name=os.getenv("WANDB_RUN_NAME", f"LR={ENV_LR}_WD={ENV_WEIGHT_DECAY}")
     )
+
 
     model.to(device)    
 
@@ -299,7 +308,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, scheduler,
         
         if ema_val < best_val - 1e-6:
             best_val = ema_val                        
-            torch.save(model.state_dict(), "best_model_0.pth") 
+            torch.save(model.state_dict(), "qm9_lr{ENV_LR}_wd{ENV_WEIGHT_DECAY}.pth") 
 
         current_lr = optimizer.param_groups[0]['lr']
 
@@ -363,7 +372,7 @@ def main():
 
     # Loss & optimizer & scaler
     criterion = nn.L1Loss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2, weight_decay=1e-5)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=ENV_LR, weight_decay=ENV_WEIGHT_DECAY)
     scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-6)
 
     # >>> QUICK 1 EPOCH SANITY RUN WITH TIMING (TEMPORARY) <<<
@@ -402,8 +411,8 @@ def main():
     train(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs=20, start_epoch=0)
     
     # Reload best checkpoint before evaluating
-    print("Loading best_model.pth for evaluation...")
-    model.load_state_dict(torch.load("best_model_0.pth", map_location=device))
+    print("Loading qm9_lr{ENV_LR}_wd{ENV_WEIGHT_DECAY}.pth for evaluation...")
+    model.load_state_dict(torch.load("qm9_lr{ENV_LR}_wd{ENV_WEIGHT_DECAY}.pth", map_location=device))
     
     # Please note that test_mae is the raw mean absolute error (MAE) 
     # in the original physical units of the target.
