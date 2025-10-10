@@ -226,11 +226,11 @@ def equi_join_batch(x, y, reference):
     """
 
     join = join_batch(x, y)
-    # Shape: (batch_size, num_tokens, 1)
-    pseudoscalar = reference[..., 15].unsqueeze(-1)
-    # Use only the SIGN to keep mirror-equivariance but remove magnitude drift
-    ps_sign = torch.sign(pseudoscalar)
-    # extra safe for exactly-zero cases:
-    # ps_sign = torch.where(pseudoscalar >= 0, pseudoscalar.new_tensor(1.0), pseudoscalar.new_tensor(-1.0))
+    # Using orientation from the trivector e1e2e3:
+    idx_triv = constants.components.index('e1e2e3')  # orientation channel
+    triv = reference[..., idx_triv].unsqueeze(-1)
+    triv_sign = torch.sign(triv)
+    # Fallback to +1 when triv == 0 to avoid 0-sign.
+    triv_sign = torch.where(triv_sign == 0, triv_sign.new_tensor(1.0), triv_sign)
 
-    return join * ps_sign.to(join.device)
+    return join * triv_sign.to(join.device)
