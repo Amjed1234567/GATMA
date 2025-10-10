@@ -88,17 +88,32 @@ class MVGatedGelu(nn.Module):
        
 # E(3)-equivariant LayerNorm for multivectors in G3,0,1.
 class MVLayerNorm(nn.Module):
-    def __init__(self, eps=1e-5):
+    def __init__(self, eps=1e-5, mode: str = "mask"):
+        """
+        mode:
+          - "mask": ℝ⁸ dot over non-e0 blades (paper's description)
+          - "signed": invariant PGA inner product with grade signs (indefinite), |·| before sqrt
+        """
         super().__init__()
-        self.eps = eps
-        # Mask to keep ONLY non-e0 blades (8 dims): 1, e1, e2, e3, e1e2, e1e3, e2e3, e1e2e3
-        self.register_buffer("mask", constants.non_e0_mask)  # [1,1,16]
+        self.eps  = eps
+        self.mode = mode
+        # non-e0 mask (ℝ⁸)
+        self.register_buffer("non_e0_mask", constants.non_e0_mask)  # [1,1,16]
+        # signed metric (+1 for 1,e1,e2,e3,e1e2e3; -1 for e1e2,e1e3,e2e3; 0 for any e0 blade)
+        metric = torch.tensor(
+            [ +1, 0, +1, +1, +1, 0, 0, 0, -1, -1, -1, 0, 0, +1, 0, 0 ],
+            dtype=torch.float32).view(1,1,-1)
+        self.register_buffer("metric_signs", metric)
 
     def forward(self, x):
-        # ℝ⁸ dot product on non-e0 components, as in the paper
-        inner = ((x ** 2) * self.mask).sum(dim=-1, keepdim=True)
-        norm  = torch.sqrt(inner + self.eps)
+        if self.mode == "mask":
+            inner = ((x ** 2) * self.non_e0_mask).sum(dim=-1, keepdim=True)
+            norm  = torch.sqrt(inner + self.eps)
+        else:  # "signed"
+            inner = (x * x * self.metric_signs).sum(dim=-1, keepdim=True)   # can be <0
+            norm  = torch.sqrt(torch.abs(inner) + self.eps)
         return x / norm
+
 
 
 class MVAttentionHead(nn.Module):
@@ -183,12 +198,15 @@ class MVMultiHeadAttention(nn.Module):
         return y
 
 
+# --- Add toggles at top of file (temporary debug flags) ---
+DEBUG_DISABLE_JOIN = False
+DEBUG_DISABLE_GP   = False
+# ----------------------------------------------------------
 
-# This is the bilinear layer.
 class MVGeometricBilinear(nn.Module):
     def __init__(self):
         super().__init__()
-
+        
     def forward(self, x, y, reference):
         """
         Args:
@@ -197,12 +215,24 @@ class MVGeometricBilinear(nn.Module):
         Returns:
             torch.Tensor: Concatenation of geometric product and E(3)-equivariant join. 
             Shape: (batch_size, num_tokens, 2*len(constants.components))
-        """
+        """        
+        gp = geometric_product_batch(x, y) if not DEBUG_DISABLE_GP else torch.zeros_like(x)
+        join = equi_join_batch(x, y, reference) if not DEBUG_DISABLE_JOIN else torch.zeros_like(x)
+        
+        return torch.cat([gp, join], dim=-1)
+"""
+# This is the bilinear layer.
+class MVGeometricBilinear(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x, y, reference):
+        
         gp = geometric_product_batch(x, y)           
         join = equi_join_batch(x, y, reference)      
 
         return torch.cat([gp, join], dim=-1)         
-    
+"""    
     
 # Putting the layers together to form a block. 
 class MVFeedforwardBlock(nn.Module):    
@@ -217,22 +247,13 @@ class MVFeedforwardBlock(nn.Module):
         self.dropout = nn.Dropout(0.1)
         
     def forward(self, x, reference=None):
-        """
-        x: [B,N,16]  -- this is the *normalized* input when called from the block
-        reference: [B,N,16] -- must be the *pre-norm* tensor to use throughout FF
-        """
-        # Use the pre-norm stream consistently inside FF
+        
+        x_proj  = self.linear1(x)
+        x_gated = self.gelu(x_proj)
+
+        
         ref = reference if reference is not None else x
-
-        # Residual should also be pre-norm
-        residual = ref
-
-        # Do FF on the pre-norm stream
-        x_proj   = self.linear1(ref)
-        x_gated  = self.gelu(x_proj)
-
-        # Geometric bilinear on the pre-norm stream; reference is pre-norm
-        x_bilinear = self.bilinear(ref, x_gated, ref)
+        x_bilinear = self.bilinear(x, x_gated, ref)
 
         n = len(constants.components)
         gp_part   = x_bilinear[..., :n]
@@ -240,7 +261,6 @@ class MVFeedforwardBlock(nn.Module):
 
         x_out = self.linear2_gp(gp_part) + self.linear2_join(join_part)
         x_out = self.dropout(x_out)
+        return x_out   
 
-        # Add back to the pre-norm residual
-        return x_out + residual
-        
+            

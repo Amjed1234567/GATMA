@@ -7,37 +7,35 @@ from gpu_building_blocks import (
 # -------------------------
 # Transformer Block 
 # -------------------------
-# gpu_transformer.py
-
-import torch
-import torch.nn as nn
-from gpu_building_blocks import (
-    MVLayerNorm, MVMultiHeadAttention, MVFeedforwardBlock, MVLinear
-)
-
-# gpu_transformer.py
 class MVTransformerBlock(nn.Module):
     def __init__(self, num_heads: int):
         super().__init__()
-        self.norm1 = MVLayerNorm()
+        self.norm1 = MVLayerNorm(mode="mask")
         self.attn  = MVMultiHeadAttention(num_heads)
-        self.norm2 = MVLayerNorm()
+        self.norm2 = MVLayerNorm(mode="mask")   
         self.ff    = MVFeedforwardBlock()
 
-    def forward(self, x):
-        # Attention + residual
+    def forward(self, x):        
         res = x
-        x = self.norm1(x)
-        x = self.attn(x)
-        x = x + res
+        x   = self.norm1(x)
+        x   = self.attn(x)
+        x   = x + res
+        
+        pre_norm = x                 
+        x        = self.norm2(x)     
 
-        # Feedforward + residual (pass pre-norm res as reference)
-        res = x                        # <- pre-norm for the FF path
-        x = self.norm2(x)              # normalized stream (not used inside FF anymore)
-        x = self.ff(x, reference=res)  # FF works entirely on `res`
-        x = x + res
-        return x
+        # Build a GLOBAL normalized reference: pure +/- I. 
+        ref_ps   = x[..., 15].mean(dim=1, keepdim=True)        # [B,1]
+        ref_sign = torch.where(ref_ps >= 0, ref_ps.new_tensor(1.0),
+                                         ref_ps.new_tensor(-1.0))
+        ref_I    = torch.zeros_like(x.mean(dim=1, keepdim=True))  # [B,1,16]
+        ref_I[..., 15] = ref_sign  # +/- I only. 
 
+        delta = self.ff(x, reference=ref_I)
+
+        return delta + pre_norm
+    
+    
 # -------------------------
 # Multiple tokens (multivectors) per atom (n channels per atom)
 # -------------------------

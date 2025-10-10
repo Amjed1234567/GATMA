@@ -227,6 +227,10 @@ def equi_join_batch(x, y, reference):
 
     join = join_batch(x, y)
     # Shape: (batch_size, num_tokens, 1)
-    pseudoscalar = reference[..., 15].unsqueeze(-1)  
-    
-    return join * pseudoscalar.to(join.device)
+    pseudoscalar = reference[..., 15].unsqueeze(-1)
+    # Use only the SIGN to keep mirror-equivariance but remove magnitude drift
+    ps_sign = torch.sign(pseudoscalar)
+    # extra safe for exactly-zero cases:
+    # ps_sign = torch.where(pseudoscalar >= 0, pseudoscalar.new_tensor(1.0), pseudoscalar.new_tensor(-1.0))
+
+    return join * ps_sign.to(join.device)
