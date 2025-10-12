@@ -64,7 +64,7 @@ def _as_float(env_name: str, default: float) -> float:
 @dataclass
 class TrainConfig:
     data_size: int = int(os.getenv("DATA_SIZE", "1000"))
-    batch_size: int = int(os.getenv("BATCH_SIZE", "512"))
+    batch_size: int = int(os.getenv("BATCH_SIZE", "128"))
     epochs: int = int(os.getenv("EPOCHS", "20"))
     lr: float = _as_float("LR", 3e-4)                    
     weight_decay: float = _as_float("WEIGHT_DECAY", 0.0) 
