@@ -1,23 +1,28 @@
-import random as rnd
+import random
 import math
 import torch
 
 def create_one_sample():
-    # Plane parameters.
-    a = rnd.choice([i for i in range(-10,10) if i not in [0]])
-    b = rnd.choice([i for i in range(-10,10) if i not in [0]])
-    c = rnd.choice([i for i in range(-10,10) if i not in [0]])
-    d = rnd.choice([i for i in range(-10,10) if i not in [0]])
-    # Point parameters.
-    x = rnd.choice([i for i in range(-10,10) if i not in [0]])
-    y = rnd.choice([i for i in range(-10,10) if i not in [0]])
-    z = rnd.choice([i for i in range(-10,10) if i not in [0]])
-    # Euclidian distance between point and plane.
-    dist = abs(a*x + b*y + c*z + d) / math.sqrt(a**2 + b**2 + c**2)
+      
+    total = 6
+    start = -10 
+    end = 10
 
-    return [a, b, c, d, x, y, z, dist]
-
-
+    numbers = random.choices(range(start, end + 1), k=total)
+    
+    x1 = numbers[0]
+    y1 = numbers[1]
+    z1 = numbers[2]
+    
+    x2 = numbers[3]
+    y2 = numbers[4]
+    z2 = numbers[5]
+    
+    dist = math.sqrt( (x1-x2)**2 + (y1-y2)**2 + (z1-z2)**2 )
+    
+    return [x1, y1, z1, x2, y2, z2, dist]
+    
+        
 def create_data(data_size:int):
     data_list = []
     for i in range(data_size):
