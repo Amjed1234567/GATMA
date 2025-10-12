@@ -63,9 +63,9 @@ def _as_float(env_name: str, default: float) -> float:
 
 @dataclass
 class TrainConfig:
-    data_size: int = int(os.getenv("DATA_SIZE", "1000"))
-    batch_size: int = int(os.getenv("BATCH_SIZE", "128"))
-    epochs: int = int(os.getenv("EPOCHS", "20"))
+    data_size: int = int(os.getenv("DATA_SIZE", "50000"))
+    batch_size: int = int(os.getenv("BATCH_SIZE", "256"))
+    epochs: int = int(os.getenv("EPOCHS", "100"))
     lr: float = _as_float("LR", 3e-4)                    
     weight_decay: float = _as_float("WEIGHT_DECAY", 0.0) 
     seed: int = int(os.getenv("SEED", "42"))
@@ -146,14 +146,40 @@ def main():
     # 1) Encode happens inside loaders
     # ---------------------------
     train_loader, val_loader, test_loader, test_rows_all = build_loaders(cfg)
+    
+    # --- compute train target mean/std for standardization ---
+    def _collect_targets(loader, device):
+        ys = []
+        for _, y in loader:
+            ys.append(y)
+        return torch.cat(ys, dim=0)
+    
+
+    y_train_all = _collect_targets(train_loader, device=torch.device("cpu"))
+    t_mean = y_train_all.mean().item()
+    t_std  = y_train_all.std(unbiased=False).item() or 1.0  # avoid div-by-zero
+    print(f"[info] target mean={t_mean:.4f}, std={t_std:.4f}")
 
     # ---------------------------
     # 2) Train
     # ---------------------------
-    model = DistanceModel(num_layers=4, num_heads=2, channels_per_atom=1).to(device)
+    model = DistanceModel(num_layers=6, num_heads=2, channels_per_atom=4).to(device)
     optim = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=cfg.epochs)
     loss_fn = nn.L1Loss()
+
+    # before training loop — warmup + cosine schedule
+    warmup_epochs = max(3, int(0.05 * cfg.epochs))
+    total_epochs  = cfg.epochs
+
+    def lr_lambda(ep):
+        if ep < warmup_epochs:
+            return (ep + 1) / warmup_epochs
+        # cosine from 1.0 down to 0 over the rest
+        progress = (ep - warmup_epochs) / max(1, total_epochs - warmup_epochs)
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    sched = torch.optim.lr_scheduler.LambdaLR(optim, lr_lambda=lr_lambda)
+
 
     best_val = float("inf"); best_path = None
     print(f"Training with LR={cfg.lr} WD={cfg.weight_decay}")
@@ -164,8 +190,11 @@ def main():
         for tokens, target in train_loader:
             tokens = tokens.to(device); target = target.to(device)
             pred = model(tokens)
-            loss = loss_fn(pred, target)
-            optim.zero_grad(); loss.backward(); optim.step()
+            loss = loss_fn((pred - t_mean)/t_std, (target - t_mean)/t_std)
+            optim.zero_grad() 
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optim.step()
             running += loss.item() * target.numel(); seen += target.numel()
         sched.step()
         train_loss = running / max(1, seen)
@@ -191,10 +220,25 @@ def main():
         if best_path: wandb.summary["ckpt_path"] = best_path
 
     # ---------------------------
-    # 3) Final MAE (test)
+    # Section 3) Print final MAE on test set (standardized)
     # ---------------------------
-    test_mae = evaluate_mae(model, test_loader, device)
+    with torch.no_grad():
+        mae = 0.0
+        n = 0
+        for tokens, target in test_loader:
+            tokens = tokens.to(device)
+            target = target.to(device)
+            pred = model(tokens)
+
+            # denormalize prediction
+            pred = (pred - t_mean) / t_std   # ← same normalization used in training loss
+            pred = pred * t_std + t_mean     # optional: restores original units (keeps code clear)
+
+            mae += (pred - target).abs().sum().item()
+            n += target.numel()
+    test_mae = mae / max(1, n)
     print(f"[3] Final test MAE: {test_mae:.6f}")
+
 
     with torch.no_grad():
         base_tokens = encode_pair_rows(test_rows_all).to(device)
@@ -202,7 +246,8 @@ def main():
 
     # 4) Translate
     trans_tokens = translate_tokens(base_tokens, dx=5.0, dy=5.0, dz=5.0)
-    # 5) Predict
+
+    # 5) Predict (translation)
     with torch.no_grad():
         pred_trans = model(trans_tokens)
     # 6) Mean |pred-gt|
@@ -211,7 +256,8 @@ def main():
 
     # 7) Rotate 45 deg
     rot_tokens = rotate_tokens_z(base_tokens, degrees=45.0)
-    # 8) Predict
+
+    # 8) Predict (rotation)
     with torch.no_grad():
         pred_rot = model(rot_tokens)
     # 9) Mean |pred-gt|
@@ -220,7 +266,8 @@ def main():
 
     # 10) Reflect across x=0
     ref_tokens = reflect_tokens_yz(base_tokens)
-    # 11) Predict
+
+    # 11) Predict (reflection)
     with torch.no_grad():
         pred_ref = model(ref_tokens)
     # 12) Mean |pred-gt|
