@@ -122,6 +122,38 @@ def reflect_tokens_yz(tokens):
     out[..., IDX_E023] = -out[..., IDX_E023]
     return out
 
+
+def _rand_unit_vector(device):
+    v = torch.randn(3, device=device)
+    return v / (v.norm() + 1e-9)
+
+
+def _rotation_matrix(axis, theta):
+    # axis: [3], theta: float (radians)
+    ux, uy, uz = axis
+    c, s = math.cos(theta), math.sin(theta)
+    C = 1 - c
+    R = torch.tensor([
+        [c + ux*ux*C,    ux*uy*C - uz*s, ux*uz*C + uy*s],
+        [uy*ux*C + uz*s, c + uy*uy*C,    uy*uz*C - ux*s],
+        [uz*ux*C - uy*s, uz*uy*C + ux*s, c + uz*uz*C   ],
+    ], dtype=torch.float32, device=axis.device)
+    return R  # [3,3]
+
+
+def apply_R_to_tokens(tokens, R):
+    # tokens: [B, 2, 16]; R: [3,3]
+    out = tokens.clone()
+    # stack coords as [B, 2, 3]
+    X = torch.stack([out[..., IDX_E023], out[..., IDX_E013], out[..., IDX_E012]], dim=-1)
+    # matmul: [B,2,3] x [3,3] -> [B,2,3]
+    X_rot = X @ R.T
+    out[..., IDX_E023] = X_rot[..., 0]
+    out[..., IDX_E013] = X_rot[..., 1]
+    out[..., IDX_E012] = X_rot[..., 2]
+    return out
+
+
 def main():
     cfg = TrainConfig()
     set_seed(cfg.seed)
@@ -189,8 +221,28 @@ def main():
         running = 0.0; seen = 0
         for tokens, target in train_loader:
             tokens = tokens.to(device); target = target.to(device)
+            
+            # Random rotation augmentation
+            axis  = _rand_unit_vector(device)
+            theta = (torch.rand((), device=device) * 2 - 1).item() * math.pi  # random in [-pi, pi]
+            R = _rotation_matrix(axis, theta)
+            tokens = apply_R_to_tokens(tokens, R)
+
+            # Keep an independently rotated copy for consistency
+            axis2  = _rand_unit_vector(device)
+            theta2 = (torch.rand((), device=device) * 2 - 1).item() * math.pi
+            R2 = _rotation_matrix(axis2, theta2)
+            tokens_cons = apply_R_to_tokens(tokens, R2)
+
+
             pred = model(tokens)
-            loss = loss_fn((pred - t_mean)/t_std, (target - t_mean)/t_std)
+            pred_cons = model(tokens_cons)
+
+            loss_data = loss_fn((pred - t_mean)/t_std, (target - t_mean)/t_std)
+            loss_cons = ((pred - pred_cons).abs() / t_std).mean()
+            loss = loss_data + 0.2 * loss_cons   # 0.2 can be changed. 
+
+            
             optim.zero_grad() 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
