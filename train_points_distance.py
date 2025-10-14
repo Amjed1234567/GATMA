@@ -154,6 +154,19 @@ def apply_R_to_tokens(tokens, R):
     return out
 
 
+def apply_T_to_tokens(tokens, tx, ty, tz):
+    out = tokens.clone()
+    out[..., IDX_E023] += tx
+    out[..., IDX_E013] += ty
+    out[..., IDX_E012] += tz
+    return out
+
+def apply_reflect_yz(tokens):
+    out = tokens.clone()
+    out[..., IDX_E023] = -out[..., IDX_E023]
+    return out
+
+
 def main():
     cfg = TrainConfig()
     set_seed(cfg.seed)
@@ -233,14 +246,33 @@ def main():
             theta2 = (torch.rand((), device=device) * 2 - 1).item() * math.pi
             R2 = _rotation_matrix(axis2, theta2)
             tokens_cons = apply_R_to_tokens(tokens, R2)
+            
+            # --- Translation consistency view (global random shift) ---
+            t = (torch.rand(3, device=device) * 2 - 1) * 5.0   # random in [-5,5] on each axis
+            tokens_trans = apply_T_to_tokens(tokens, t[0].item(), t[1].item(), t[2].item())
+
+            # --- Reflection consistency view (yz-plane) ---
+            tokens_ref = apply_reflect_yz(tokens)
 
 
-            pred = model(tokens)
-            pred_cons = model(tokens_cons)
+            pred       = model(tokens)
+            pred_rot   = model(tokens_cons)      # rotation view
+            pred_trans = model(tokens_trans)     # translation view
+            pred_ref   = model(tokens_ref)       # reflection view
 
+            # supervised data term (normalized)
             loss_data = loss_fn((pred - t_mean)/t_std, (target - t_mean)/t_std)
-            loss_cons = ((pred - pred_cons).abs() / t_std).mean()
-            loss = loss_data + 0.2 * loss_cons   # 0.2 can be changed. 
+
+            # consistency terms (teach invariances explicitly)
+            lam_rot = 0.2
+            lam_trn = 0.2
+            lam_ref = 0.2
+
+            loss_cons_rot = ((pred - pred_rot).abs()   / t_std).mean()
+            loss_cons_trn = ((pred - pred_trans).abs() / t_std).mean()
+            loss_cons_ref = ((pred - pred_ref).abs()   / t_std).mean()
+
+            loss = loss_data + lam_rot*loss_cons_rot + lam_trn*loss_cons_trn + lam_ref*loss_cons_ref
 
             
             optim.zero_grad() 
