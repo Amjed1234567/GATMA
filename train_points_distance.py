@@ -211,9 +211,16 @@ def main():
     model = DistanceModel(num_layers=6, num_heads=2, channels_per_atom=4).to(device)
     optim = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     loss_fn = nn.L1Loss()
+    use_amp = bool(int(os.getenv("USE_AMP", "1")))  # default ON
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+
 
     # before training loop — warmup + cosine schedule
-    warmup_epochs = max(3, int(0.05 * cfg.epochs))
+    # 5% by default, 10% if LR >= 1e-2
+    warmup_frac = float(os.getenv("WARMUP_FRAC", "0.05"))
+    if cfg.lr >= 1e-2:
+        warmup_frac = max(warmup_frac, 0.10)
+    warmup_epochs = max(3, int(warmup_frac * cfg.epochs))
     total_epochs  = cfg.epochs
 
     def lr_lambda(ep):
@@ -230,6 +237,13 @@ def main():
     print(f"Training with LR={cfg.lr} WD={cfg.weight_decay}")
 
     for epoch in range(1, cfg.epochs + 1):
+        
+        progress01 = (epoch - 1) / max(1, cfg.epochs - 1)   # 0→1
+        aug_scale  = float(os.getenv("AUG_SCALE_MAX", "1.0")) * progress01
+        # start small, ramp to full:
+        max_angle_deg = float(os.getenv("AUG_MAX_ANGLE_DEG", "180")) * aug_scale
+        max_shift     = float(os.getenv("AUG_MAX_SHIFT", "5.0")) * aug_scale
+        
         model.train()
         running = 0.0; seen = 0
         for tokens, target in train_loader:
@@ -237,49 +251,64 @@ def main():
             
             # Random rotation augmentation
             axis  = _rand_unit_vector(device)
-            theta = (torch.rand((), device=device) * 2 - 1).item() * math.pi  # random in [-pi, pi]
+            theta = (torch.rand((), device=device) * 2 - 1).item() * math.radians(max_angle_deg)
             R = _rotation_matrix(axis, theta)
             tokens = apply_R_to_tokens(tokens, R)
 
             # Keep an independently rotated copy for consistency
             axis2  = _rand_unit_vector(device)
-            theta2 = (torch.rand((), device=device) * 2 - 1).item() * math.pi
+            theta2 = (torch.rand((), device=device) * 2 - 1).item() * math.radians(max_angle_deg)
             R2 = _rotation_matrix(axis2, theta2)
             tokens_cons = apply_R_to_tokens(tokens, R2)
             
             # --- Translation consistency view (global random shift) ---
-            t = (torch.rand(3, device=device) * 2 - 1) * 5.0   # random in [-5,5] on each axis
+            t = (torch.rand(3, device=device) * 2 - 1) * max_shift
             tokens_trans = apply_T_to_tokens(tokens, t[0].item(), t[1].item(), t[2].item())
 
             # --- Reflection consistency view (yz-plane) ---
             tokens_ref = apply_reflect_yz(tokens)
 
 
-            pred       = model(tokens)
-            pred_rot   = model(tokens_cons)      # rotation view
-            pred_trans = model(tokens_trans)     # translation view
-            pred_ref   = model(tokens_ref)       # reflection view
+            with torch.amp.autocast(device_type="cuda", enabled=use_amp):
+                pred       = model(tokens)
+                pred_rot   = model(tokens_cons)
+                pred_trans = model(tokens_trans)
+                pred_ref   = model(tokens_ref)
 
-            # supervised data term (normalized)
-            loss_data = loss_fn((pred - t_mean)/t_std, (target - t_mean)/t_std)
+                # supervised data term (normalized)
+                loss_data = loss_fn((pred - t_mean)/t_std, (target - t_mean)/t_std)
 
-            # consistency terms (teach invariances explicitly)
-            lam_rot = 0.2
-            lam_trn = 0.2
-            lam_ref = 0.2
+                # consistency terms (teach invariances explicitly)
+                base_lam = float(os.getenv("LAM_BASE", "0.2"))
+                lam_rot = float(os.getenv("LAM_ROT", str(base_lam))) * progress01
+                lam_trn = float(os.getenv("LAM_TRN", str(base_lam))) * progress01
+                lam_ref = float(os.getenv("LAM_REF", str(base_lam))) * progress01
 
-            loss_cons_rot = ((pred - pred_rot).abs()   / t_std).mean()
-            loss_cons_trn = ((pred - pred_trans).abs() / t_std).mean()
-            loss_cons_ref = ((pred - pred_ref).abs()   / t_std).mean()
+                loss_cons_rot = ((pred - pred_rot).abs()   / t_std).mean()
+                loss_cons_trn = ((pred - pred_trans).abs() / t_std).mean()
+                loss_cons_ref = ((pred - pred_ref).abs()   / t_std).mean()
 
-            loss = loss_data + lam_rot*loss_cons_rot + lam_trn*loss_cons_trn + lam_ref*loss_cons_ref
+                loss = loss_data + lam_rot*loss_cons_rot + lam_trn*loss_cons_trn + lam_ref*loss_cons_ref
 
+            # --- safety check: skip NaN or Inf loss ---
+            if not torch.isfinite(loss):
+                print(f"[warning] Non-finite loss detected at epoch {epoch}. Reducing LR by 0.5 and skipping batch.")
+                for g in optim.param_groups:
+                    g["lr"] = g["lr"] * 0.5
+                continue
             
-            optim.zero_grad() 
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optim.step()
+            optim.zero_grad()
+            if use_amp:
+                scaler.scale(loss).backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                scaler.step(optim)
+                scaler.update()
+            else:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optim.step()
             running += loss.item() * target.numel(); seen += target.numel()
+            
         sched.step()
         train_loss = running / max(1, seen)
 
