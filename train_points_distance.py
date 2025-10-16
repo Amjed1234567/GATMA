@@ -167,6 +167,25 @@ def apply_reflect_yz(tokens):
     return out
 
 
+def center_tokens(tokens: torch.Tensor) -> torch.Tensor:
+    """
+    tokens: [B, 2, 16] (two points as trivectors)
+    Subtracts the centroid of the two points from both points (on e0ij coords).
+    """
+    out = tokens.clone()
+    # coords: [B, 2]
+    x = out[..., IDX_E023]
+    y = out[..., IDX_E013]
+    z = out[..., IDX_E012]
+    cx = x.mean(dim=1, keepdim=True)  # [B,1]
+    cy = y.mean(dim=1, keepdim=True)
+    cz = z.mean(dim=1, keepdim=True)
+    out[..., IDX_E023] = x - cx
+    out[..., IDX_E013] = y - cy
+    out[..., IDX_E012] = z - cz
+    return out
+
+
 def main():
     cfg = TrainConfig()
     set_seed(cfg.seed)
@@ -267,6 +286,12 @@ def main():
 
             # --- Reflection consistency view (yz-plane) ---
             tokens_ref = apply_reflect_yz(tokens)
+            
+            # --- Center every view to enforce translation invariance by design ---
+            tokens      = center_tokens(tokens)
+            tokens_cons = center_tokens(tokens_cons)
+            tokens_trans= center_tokens(tokens_trans)
+            tokens_ref  = center_tokens(tokens_ref)
 
 
             with torch.amp.autocast(device_type="cuda", enabled=use_amp):
@@ -355,10 +380,12 @@ def main():
 
     with torch.no_grad():
         base_tokens = encode_pair_rows(test_rows_all).to(device)
+        base_tokens = center_tokens(base_tokens)
         gt = test_rows_all[:, 6].to(device)
 
     # 4) Translate
     trans_tokens = translate_tokens(base_tokens, dx=5.0, dy=5.0, dz=5.0)
+    trans_tokens = center_tokens(trans_tokens)
 
     # 5) Predict (translation)
     with torch.no_grad():
@@ -369,6 +396,7 @@ def main():
 
     # 7) Rotate 45 deg
     rot_tokens = rotate_tokens_z(base_tokens, degrees=45.0)
+    rot_tokens = center_tokens(rot_tokens)
 
     # 8) Predict (rotation)
     with torch.no_grad():
@@ -379,6 +407,7 @@ def main():
 
     # 10) Reflect across x=0
     ref_tokens = reflect_tokens_yz(base_tokens)
+    ref_tokens = center_tokens(ref_tokens)
 
     # 11) Predict (reflection)
     with torch.no_grad():
