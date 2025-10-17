@@ -96,7 +96,8 @@ def build_loaders(cfg: TrainConfig):
 def evaluate_mae(model, loader, device):
     model.eval(); mae = 0.0; n = 0
     for tokens, target in loader:
-        tokens = tokens.to(device); target = target.to(device)
+        tokens = center_tokens(tokens.to(device))
+        target = target.to(device)
         pred = model(tokens)
         mae += (pred - target).abs().sum().item()
         n += target.numel()
@@ -263,6 +264,10 @@ def main():
         max_angle_deg = float(os.getenv("AUG_MAX_ANGLE_DEG", "180")) * aug_scale
         max_shift     = float(os.getenv("AUG_MAX_SHIFT", "5.0")) * aug_scale
         
+        # --- print LR every 10 epochs (and first epoch) ---
+        if epoch == 1 or epoch % 10 == 0:
+            print(f"epoch {epoch}: lr={sched.get_last_lr()[0]:.3e}")
+        
         model.train()
         running = 0.0; seen = 0
         for tokens, target in train_loader:
@@ -365,6 +370,7 @@ def main():
         n = 0
         for tokens, target in test_loader:
             tokens = tokens.to(device)
+            tokens = center_tokens(tokens) 
             target = target.to(device)
             pred = model(tokens)
 
