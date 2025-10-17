@@ -224,6 +224,11 @@ def main():
     t_mean = y_train_all.mean().item()
     t_std  = y_train_all.std(unbiased=False).item() or 1.0  # avoid div-by-zero
     print(f"[info] target mean={t_mean:.4f}, std={t_std:.4f}")
+    
+    # --- compute baseline MAE: mean absolute deviation from target mean ---
+    baseline_mae = (y_train_all - t_mean).abs().mean().item()
+    print(f"Baseline MAE = {baseline_mae:.6f}")
+    
 
     # ---------------------------
     # 2) Train
