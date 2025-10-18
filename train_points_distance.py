@@ -21,6 +21,10 @@ from gpu_building_blocks import MVLinear
 def set_seed(seed: int = 42):
     random.seed(seed); torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)
 
+# This is to aline the distance between the two points with positive x-axis.    
+use_align = bool(int(os.getenv("ALIGN_PAIR", "1")))  # default ON
+    
+
 # ==== PGA point embedding indices ====
 IDX_E012  = constants.components.index('e0e1e2')
 IDX_E013  = constants.components.index('e0e1e3')
@@ -97,6 +101,9 @@ def evaluate_mae(model, loader, device):
     model.eval(); mae = 0.0; n = 0
     for tokens, target in loader:
         tokens = center_tokens(tokens.to(device))
+        if use_align:
+            tokens = align_pair_to_x(tokens)
+
         target = target.to(device)
         pred = model(tokens)
         mae += (pred - target).abs().sum().item()
@@ -187,6 +194,42 @@ def center_tokens(tokens: torch.Tensor) -> torch.Tensor:
     return out
 
 
+def _align_vec_a_to_b_R(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    # a,b: [B,3] unit vectors; returns batch of [B,3,3] rotation matrices
+    ux = torch.cross(a, b, dim=-1)                           # axis
+    c = (a * b).sum(-1, keepdim=True).clamp(-1+1e-7, 1-1e-7) # cosθ
+    s = torch.linalg.vector_norm(ux, dim=-1, keepdim=True)   # |axis| = sinθ
+    ux = ux / (s + 1e-9)
+    K = torch.zeros(a.size(0), 3, 3, device=a.device, dtype=a.dtype)
+    K[:,0,1], K[:,0,2] = -ux[:,2],  ux[:,1]
+    K[:,1,0], K[:,1,2] =  ux[:,2], -ux[:,0]
+    K[:,2,0], K[:,2,1] = -ux[:,1],  ux[:,0]
+    I = torch.eye(3, device=a.device, dtype=a.dtype).expand_as(K)
+    # Rodrigues: R = I + sinθ K + (1-cosθ) K^2; replace sinθ with s (since s = |axis| = sinθ)
+    R = I + s[...,None] * K + (1 - c)[...,None] * (K @ K)
+    return R
+
+
+def align_pair_to_x(tokens):
+    # tokens: [B,2,16] -> rotate so (p2-p1) aligns to +x
+    out = tokens.clone()
+    X = torch.stack([out[..., IDX_E023], out[..., IDX_E013], out[..., IDX_E012]], dim=-1)  # [B,2,3]
+    d = X[:,1,:] - X[:,0,:]                       # [B,3]
+    n = torch.linalg.vector_norm(d, dim=-1, keepdim=True)
+    mask = (n > 1e-9).squeeze(-1)
+    d_unit = torch.zeros_like(d)
+    d_unit[mask] = d[mask] / n[mask]
+    ex = torch.tensor([1.0,0.0,0.0], device=tokens.device, dtype=tokens.dtype).expand_as(d_unit)
+    R = _align_vec_a_to_b_R(d_unit, ex)          # [B,3,3]
+    X_aligned = X.clone()
+    X_aligned[mask] = (X[mask] @ R[mask].transpose(-1,-2))
+    out[..., IDX_E023] = X_aligned[...,0]
+    out[..., IDX_E013] = X_aligned[...,1]
+    out[..., IDX_E012] = X_aligned[...,2]
+    return out
+
+
+
 def main():
     cfg = TrainConfig()
     set_seed(cfg.seed)
@@ -238,8 +281,7 @@ def main():
     loss_fn = nn.L1Loss()
     use_amp = bool(int(os.getenv("USE_AMP", "1")))  # default ON
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
-
-
+    
     # before training loop — warmup + cosine schedule
     # 5% by default, 10% if LR >= 1e-2
     warmup_frac = float(os.getenv("WARMUP_FRAC", "0.05"))
@@ -302,6 +344,13 @@ def main():
             tokens_cons = center_tokens(tokens_cons)
             tokens_trans= center_tokens(tokens_trans)
             tokens_ref  = center_tokens(tokens_ref)
+            
+            # --- Align pair direction to +x (rotation gauge) ---
+            if use_align:
+                tokens       = align_pair_to_x(tokens)
+                tokens_cons  = align_pair_to_x(tokens_cons)
+                tokens_trans = align_pair_to_x(tokens_trans)
+                tokens_ref   = align_pair_to_x(tokens_ref)
 
 
             with torch.amp.autocast(device_type="cuda", enabled=use_amp):
@@ -375,7 +424,10 @@ def main():
         n = 0
         for tokens, target in test_loader:
             tokens = tokens.to(device)
-            tokens = center_tokens(tokens) 
+            tokens = center_tokens(tokens)
+            if use_align:
+                tokens = align_pair_to_x(tokens)
+ 
             target = target.to(device)
             pred = model(tokens)
 
@@ -392,11 +444,16 @@ def main():
     with torch.no_grad():
         base_tokens = encode_pair_rows(test_rows_all).to(device)
         base_tokens = center_tokens(base_tokens)
+        if use_align:
+            base_tokens = align_pair_to_x(base_tokens)
         gt = test_rows_all[:, 6].to(device)
 
     # 4) Translate
     trans_tokens = translate_tokens(base_tokens, dx=5.0, dy=5.0, dz=5.0)
     trans_tokens = center_tokens(trans_tokens)
+    if use_align:
+        trans_tokens = align_pair_to_x(trans_tokens)
+
 
     # 5) Predict (translation)
     with torch.no_grad():
@@ -408,6 +465,9 @@ def main():
     # 7) Rotate 45 deg
     rot_tokens = rotate_tokens_z(base_tokens, degrees=45.0)
     rot_tokens = center_tokens(rot_tokens)
+    if use_align:
+        rot_tokens = align_pair_to_x(rot_tokens)
+    
 
     # 8) Predict (rotation)
     with torch.no_grad():
@@ -419,6 +479,8 @@ def main():
     # 10) Reflect across x=0
     ref_tokens = reflect_tokens_yz(base_tokens)
     ref_tokens = center_tokens(ref_tokens)
+    if use_align:
+        ref_tokens = align_pair_to_x(ref_tokens)
 
     # 11) Predict (reflection)
     with torch.no_grad():
