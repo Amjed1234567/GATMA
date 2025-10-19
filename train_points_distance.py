@@ -304,112 +304,127 @@ def main():
     print(f"Training with LR={cfg.lr} WD={cfg.weight_decay}")
 
     for epoch in range(1, cfg.epochs + 1):
-        
+        # epoch-level schedules
         progress01 = (epoch - 1) / max(1, cfg.epochs - 1)   # 0→1
         aug_scale  = float(os.getenv("AUG_SCALE_MAX", "1.0")) * progress01
-        # start small, ramp to full:
         max_angle_deg = float(os.getenv("AUG_MAX_ANGLE_DEG", "180")) * aug_scale
         max_shift     = float(os.getenv("AUG_MAX_SHIFT", "5.0")) * aug_scale
-        
-        # --- print LR every 10 epochs (and first epoch) ---
+
         if epoch == 1 or epoch % 10 == 0:
             print(f"epoch {epoch}: lr={sched.get_last_lr()[0]:.3e}")
-        
+
         model.train()
         running = 0.0; seen = 0
+
         for tokens, target in train_loader:
             tokens = tokens.to(device); target = target.to(device)
-            
-            # Random rotation augmentation
+
+            # --- random rotation aug + a second rotated view for consistency
             axis  = _rand_unit_vector(device)
             theta = (torch.rand((), device=device) * 2 - 1).item() * math.radians(max_angle_deg)
             R = _rotation_matrix(axis, theta)
             tokens = apply_R_to_tokens(tokens, R)
 
-            # Keep an independently rotated copy for consistency
             axis2  = _rand_unit_vector(device)
             theta2 = (torch.rand((), device=device) * 2 - 1).item() * math.radians(max_angle_deg)
             R2 = _rotation_matrix(axis2, theta2)
             tokens_cons = apply_R_to_tokens(tokens, R2)
-            
-            # --- Translation consistency view (global random shift) ---
+
+            # --- translation & reflection views
             t = (torch.rand(3, device=device) * 2 - 1) * max_shift
             tokens_trans = apply_T_to_tokens(tokens, t[0].item(), t[1].item(), t[2].item())
+            tokens_ref   = apply_reflect_yz(tokens)
 
-            # --- Reflection consistency view (yz-plane) ---
-            tokens_ref = apply_reflect_yz(tokens)
-            
-            # --- Center every view to enforce translation invariance by design ---
-            tokens      = center_tokens(tokens)
-            tokens_cons = center_tokens(tokens_cons)
-            tokens_trans= center_tokens(tokens_trans)
-            tokens_ref  = center_tokens(tokens_ref)
-            
-            # --- Align pair direction to +x (rotation gauge) ---
+            # --- center all views
+            tokens       = center_tokens(tokens)
+            tokens_cons  = center_tokens(tokens_cons)
+            tokens_trans = center_tokens(tokens_trans)
+            tokens_ref   = center_tokens(tokens_ref)
+
+            # --- shared alignment (from base view) applied to all
             if use_align:
-                tokens       = align_pair_to_x(tokens)
-                tokens_cons  = align_pair_to_x(tokens_cons)
-                tokens_trans = align_pair_to_x(tokens_trans)
-                tokens_ref   = align_pair_to_x(tokens_ref)
+                X = torch.stack([tokens[..., IDX_E023], tokens[..., IDX_E013], tokens[..., IDX_E012]], dim=-1)  # [B,2,3]
+                d = X[:, 1, :] - X[:, 0, :]                       # [B,3]
+                n = torch.linalg.vector_norm(d, dim=-1, keepdim=True)
+                mask = (n > 1e-9).squeeze(-1)
+                d_unit = torch.zeros_like(d); d_unit[mask] = d[mask] / n[mask]
+                ex = torch.tensor([1.0, 0.0, 0.0], device=tokens.device, dtype=tokens.dtype).expand_as(d_unit)
+                R_align = _align_vec_a_to_b_R(d_unit, ex)        # [B,3,3]
 
+                def apply_fixed_R(tok, Rf):
+                    out = tok.clone()
+                    X_ = torch.stack([out[..., IDX_E023], out[..., IDX_E013], out[..., IDX_E012]], dim=-1)
+                    X2 = X_ @ Rf.transpose(-1, -2)
+                    out[..., IDX_E023], out[..., IDX_E013], out[..., IDX_E012] = X2[...,0], X2[...,1], X2[...,2]
+                    return out
 
+                tokens       = apply_fixed_R(tokens, R_align)
+                tokens_cons  = apply_fixed_R(tokens_cons, R_align)
+                tokens_trans = apply_fixed_R(tokens_trans, R_align)
+                tokens_ref   = apply_fixed_R(tokens_ref, R_align)
+
+            # --- forward + losses (AMP)
             with torch.amp.autocast(device_type="cuda", enabled=use_amp):
                 pred       = model(tokens)
                 pred_rot   = model(tokens_cons)
                 pred_trans = model(tokens_trans)
-                pred_ref   = model(tokens_ref)
 
-                # supervised data term (normalized)
-                loss_data = loss_fn((pred - t_mean)/t_std, (target - t_mean)/t_std)
+                loss_data = loss_fn((pred - t_mean) / t_std, (target - t_mean) / t_std)
 
-                # consistency terms (teach invariances explicitly)
                 base_lam = float(os.getenv("LAM_BASE", "0.2"))
-                lam_rot = float(os.getenv("LAM_ROT", str(base_lam))) * progress01
-                lam_trn = float(os.getenv("LAM_TRN", str(base_lam))) * progress01
-                lam_ref = float(os.getenv("LAM_REF", str(base_lam))) * progress01
+                lam_rot  = float(os.getenv("LAM_ROT", str(base_lam))) * progress01
+                lam_trn  = float(os.getenv("LAM_TRN", str(base_lam))) * progress01
+                lam_ref  = float(os.getenv("LAM_REF", str(base_lam))) * progress01
 
                 loss_cons_rot = ((pred - pred_rot).abs()   / t_std).mean()
                 loss_cons_trn = ((pred - pred_trans).abs() / t_std).mean()
-                loss_cons_ref = ((pred - pred_ref).abs()   / t_std).mean()
+
+                if use_align:
+                    loss_cons_ref = 0.0
+                    lam_ref = 0.0
+                else:
+                    pred_ref      = model(tokens_ref)
+                    loss_cons_ref = ((pred - pred_ref).abs() / t_std).mean()
 
                 loss = loss_data + lam_rot*loss_cons_rot + lam_trn*loss_cons_trn + lam_ref*loss_cons_ref
 
-            # --- safety check: skip NaN or Inf loss ---
-            if not torch.isfinite(loss):
-                print(f"[warning] Non-finite loss detected at epoch {epoch}. Reducing LR by 0.5 and skipping batch.")
-                for g in optim.param_groups:
-                    g["lr"] = g["lr"] * 0.5
-                continue
-            
-            optim.zero_grad()
-            if use_amp:
-                scaler.scale(loss).backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                scaler.step(optim)
-                scaler.update()
-            else:
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                optim.step()
-            running += loss.item() * target.numel(); seen += target.numel()
-            
-        sched.step()
-        train_loss = running / max(1, seen)
+        # --- safety check & optimizer step (outside autocast)
+        if not torch.isfinite(loss):
+            print(f"[warning] Non-finite loss detected at epoch {epoch}. Reducing LR by 0.5 and skipping batch.")
+            for g in optim.param_groups:
+                g["lr"] *= 0.5
+            continue
 
-        val_mae = evaluate_mae(model, val_loader, device)
-        if use_wandb:
-            wandb.log({"epoch": epoch, "train/loss": train_loss, "val/mae": val_mae})
+        optim.zero_grad()
+        if use_amp:
+            scaler.scale(loss).backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optim); scaler.update()
+        else:
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optim.step()
 
-        # save best-by-val: file name includes LR/WD from env
-        if val_mae < best_val:
-            best_val = val_mae
-            # keep env strings to be readable in filenames
-            lr_str = os.getenv("LR", str(cfg.lr))
-            wd_str = os.getenv("WEIGHT_DECAY", str(cfg.weight_decay))
-            best_path = os.path.join(cfg.save_dir, f"gatma_points_best_LR={lr_str}_WD={wd_str}.pt")
-            torch.save({"model": model.state_dict(),
-                        "cfg": cfg.__dict__,
-                        "val_mae": best_val}, best_path)
+        running += loss.item() * target.numel()
+        seen    += target.numel()
+
+    sched.step()
+    train_loss = running / max(1, seen)
+
+    val_mae = evaluate_mae(model, val_loader, device)
+    if use_wandb:
+         wandb.log({"epoch": epoch, "train/loss": train_loss, "val/mae": val_mae})
+
+    # save best-by-val: file name includes LR/WD from env
+    if val_mae < best_val:
+        best_val = val_mae
+        # keep env strings to be readable in filenames
+        lr_str = os.getenv("LR", str(cfg.lr))
+        wd_str = os.getenv("WEIGHT_DECAY", str(cfg.weight_decay))
+        best_path = os.path.join(cfg.save_dir, f"gatma_points_best_LR={lr_str}_WD={wd_str}.pt")
+        torch.save({"model": model.state_dict(),
+                    "cfg": cfg.__dict__,
+                    "val_mae": best_val}, best_path)
 
     # finish W&B
     if use_wandb:
