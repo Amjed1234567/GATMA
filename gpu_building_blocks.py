@@ -176,7 +176,8 @@ class MVAttentionHead(nn.Module):
         attn_logits = torch.baddbmm(attn_logits, R * g, (R * g).transpose(1, 2), beta=1.0, alpha=1.0)
 
         key_mask = (x.abs().sum(dim=-1) > 0)
-        attn_logits = attn_logits.masked_fill(~key_mask.unsqueeze(1), -1e9)
+        mask_val = -1e4 if attn_logits.dtype == torch.float16 else -1e9
+        attn_logits = attn_logits.masked_fill(~key_mask.unsqueeze(1), mask_val)
 
         attn_weights = F.softmax(attn_logits, dim=-1)
         
