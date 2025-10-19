@@ -280,7 +280,7 @@ def main():
     optim = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     loss_fn = nn.L1Loss()
     use_amp = bool(int(os.getenv("USE_AMP", "1")))  # default ON
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
     
     # before training loop — warmup + cosine schedule
     # 5% by default, 10% if LR >= 1e-2
