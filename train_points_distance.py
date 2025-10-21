@@ -304,18 +304,21 @@ def main():
     print(f"Training with LR={cfg.lr} WD={cfg.weight_decay}")
 
     for epoch in range(1, cfg.epochs + 1):
+        
+        sched.step()
+
         # epoch-level schedules
-        progress01 = (epoch - 1) / max(1, cfg.epochs - 1)   # 0→1
+        progress01 = (epoch - 1) / max(1, cfg.epochs - 1)
         aug_scale  = float(os.getenv("AUG_SCALE_MAX", "1.0")) * progress01
         max_angle_deg = float(os.getenv("AUG_MAX_ANGLE_DEG", "180")) * aug_scale
         max_shift     = float(os.getenv("AUG_MAX_SHIFT", "5.0")) * aug_scale
 
         if epoch == 1 or epoch % 10 == 0:
-            print(f"epoch {epoch}: lr={sched.get_last_lr()[0]:.3e}")
+            print(f"epoch {epoch}: lr={optim.param_groups[0]['lr']:.3e}")
 
         model.train()
-        running = 0.0; seen = 0
-
+        running = 0.0; seen = 0        
+        
         for tokens, target in train_loader:
             tokens = tokens.to(device); target = target.to(device)
 
@@ -388,43 +391,42 @@ def main():
 
                 loss = loss_data + lam_rot*loss_cons_rot + lam_trn*loss_cons_trn + lam_ref*loss_cons_ref
 
-        # --- safety check & optimizer step (outside autocast)
-        if not torch.isfinite(loss):
-            print(f"[warning] Non-finite loss detected at epoch {epoch}. Reducing LR by 0.5 and skipping batch.")
-            for g in optim.param_groups:
-                g["lr"] *= 0.5
-            continue
+            # --- safety check & optimizer step (outside autocast)
+            if not torch.isfinite(loss):
+                print(f"[warning] Non-finite loss detected at epoch {epoch}. Reducing LR by 0.5 and skipping batch.")
+                for g in optim.param_groups:
+                    g["lr"] *= 0.5
+                continue
 
-        optim.zero_grad()
-        if use_amp:
-            scaler.scale(loss).backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            scaler.step(optim); scaler.update()
-        else:
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optim.step()
+            optim.zero_grad()
+            if use_amp:
+                scaler.scale(loss).backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                scaler.step(optim); scaler.update()
+            else:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optim.step()
 
-        running += loss.item() * target.numel()
-        seen    += target.numel()
+            running += loss.item() * target.numel()
+            seen    += target.numel()
+    
+        train_loss = running / max(1, seen)
 
-    sched.step()
-    train_loss = running / max(1, seen)
+        val_mae = evaluate_mae(model, val_loader, device)
+        if use_wandb:
+            wandb.log({"epoch": epoch, "train/loss": train_loss, "val/mae": val_mae})
 
-    val_mae = evaluate_mae(model, val_loader, device)
-    if use_wandb:
-         wandb.log({"epoch": epoch, "train/loss": train_loss, "val/mae": val_mae})
-
-    # save best-by-val: file name includes LR/WD from env
-    if val_mae < best_val:
-        best_val = val_mae
-        # keep env strings to be readable in filenames
-        lr_str = os.getenv("LR", str(cfg.lr))
-        wd_str = os.getenv("WEIGHT_DECAY", str(cfg.weight_decay))
-        best_path = os.path.join(cfg.save_dir, f"gatma_points_best_LR={lr_str}_WD={wd_str}.pt")
-        torch.save({"model": model.state_dict(),
-                    "cfg": cfg.__dict__,
-                    "val_mae": best_val}, best_path)
+        # save best-by-val: file name includes LR/WD from env
+        if val_mae < best_val:
+            best_val = val_mae
+            # keep env strings to be readable in filenames
+            lr_str = os.getenv("LR", str(cfg.lr))
+            wd_str = os.getenv("WEIGHT_DECAY", str(cfg.weight_decay))
+            best_path = os.path.join(cfg.save_dir, f"gatma_points_best_LR={lr_str}_WD={wd_str}.pt")
+            torch.save({"model": model.state_dict(),
+                        "cfg": cfg.__dict__,
+                        "val_mae": best_val}, best_path)
 
     # finish W&B
     if use_wandb:
