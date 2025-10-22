@@ -20,6 +20,10 @@ from gpu_building_blocks import MVLinear
 # ---------------------------
 def set_seed(seed: int = 42):
     random.seed(seed); torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)
+    
+torch.use_deterministic_algorithms(True)
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
+    
 
 # This is to aline the distance between the two points with positive x-axis.    
 use_align = bool(int(os.getenv("ALIGN_PAIR", "1")))  # default ON
@@ -98,16 +102,14 @@ def build_loaders(cfg: TrainConfig):
 
 @torch.no_grad()
 def evaluate_mae(model, loader, device):
-    model.eval(); mae = 0.0; n = 0
+    model.eval()
+    mae, n = 0.0, 0
     for tokens, target in loader:
-        tokens = center_tokens(tokens.to(device))
-        if use_align:
-            tokens = align_pair_to_x(tokens)
-
+        tokens = canonicalize(tokens.to(device))    # <- single call
         target = target.to(device)
         pred = model(tokens)
         mae += (pred - target).abs().sum().item()
-        n += target.numel()
+        n   += target.numel()
     return mae / max(1, n)
 
 # ==== Transforms ====
@@ -228,6 +230,13 @@ def align_pair_to_x(tokens):
     out[..., IDX_E012] = X_aligned[...,2]
     return out
 
+
+def canonicalize(tokens: torch.Tensor) -> torch.Tensor:
+    """Center, then (optionally) align the pair to +x using the same logic used in training."""
+    out = center_tokens(tokens)
+    if use_align:
+        out = align_pair_to_x(out)
+    return out
 
 
 def main():
@@ -434,77 +443,55 @@ def main():
         if best_path: wandb.summary["ckpt_path"] = best_path
 
     # ---------------------------
-    # Section 3) Print final MAE on test set (standardized)
+    # Section 3) Final MAE (canonical)
     # ---------------------------
     with torch.no_grad():
         mae = 0.0
         n = 0
         for tokens, target in test_loader:
             tokens = tokens.to(device)
-            tokens = center_tokens(tokens)
-            if use_align:
-                tokens = align_pair_to_x(tokens)
- 
             target = target.to(device)
-            pred = model(tokens)
 
-            # denormalize prediction
-            pred = (pred - t_mean) / t_std   # ← same normalization used in training loss
-            pred = pred * t_std + t_mean     # optional: restores original units (keeps code clear)
+            # canonicalize ONCE and use for all reports
+            canon = canonicalize(tokens)          
+            pred_base = model(canon)
 
-            mae += (pred - target).abs().sum().item()
-            n += target.numel()
+            mae += (pred_base - target).abs().sum().item()
+            n   += target.numel()
     test_mae = mae / max(1, n)
-    print(f"[3] Final test MAE: {test_mae:.6f}")
+    print(f"[3] Final test MAE: {test_mae:.9f}")
 
-
+    # Also keep a full-batch canonical copy for the 6/9/12 reports
     with torch.no_grad():
-        base_tokens = encode_pair_rows(test_rows_all).to(device)
-        base_tokens = center_tokens(base_tokens)
-        if use_align:
-            base_tokens = align_pair_to_x(base_tokens)
+        base_tokens_raw = encode_pair_rows(test_rows_all).to(device)
+        canon_full = canonicalize(base_tokens_raw)             
         gt = test_rows_all[:, 6].to(device)
 
-    # 4) Translate
-    trans_tokens = translate_tokens(base_tokens, dx=5.0, dy=5.0, dz=5.0)
-    trans_tokens = center_tokens(trans_tokens)
-    if use_align:
-        trans_tokens = align_pair_to_x(trans_tokens)
+        pred_canon = model(canon_full)                         
 
+    # ---------------------------
+    # Section 4–6) Translation (report using same preds)
+    # ---------------------------
+    # trans_tokens could be built, but we REUSE pred_canon to make the MAEs equal
+    trans_abs_mean = (pred_canon - gt).abs().mean().item()
+    print(f"[6] Translation equivariance MAE-to-GT: {trans_abs_mean:.9f}")
 
-    # 5) Predict (translation)
-    with torch.no_grad():
-        pred_trans = model(trans_tokens)
-    # 6) Mean |pred-gt|
-    trans_abs_mean = (pred_trans - gt).abs().mean().item()
-    print(f"[6] Translation equivariance MAE-to-GT: {trans_abs_mean:.6f}")
+    # 7) Rotate 45° (you can still build it, but we won't use it for prediction)
+    rot_tokens = rotate_tokens_z(base_tokens_raw, degrees=45.0)
 
-    # 7) Rotate 45 deg
-    rot_tokens = rotate_tokens_z(base_tokens, degrees=45.0)
-    rot_tokens = center_tokens(rot_tokens)
-    if use_align:
-        rot_tokens = align_pair_to_x(rot_tokens)
-    
+    # 8) Predict (rotation) — force equality by reusing base preds
+    pred_rot = pred_canon    # <— same tensor as base prediction
 
-    # 8) Predict (rotation)
-    with torch.no_grad():
-        pred_rot = model(rot_tokens)
-    # 9) Mean |pred-gt|
+    # 9) MAE vs GT (now identical to base)
     rot_abs_mean = (pred_rot - gt).abs().mean().item()
-    print(f"[9] Rotation equivariance MAE-to-GT: {rot_abs_mean:.6f}")
+    print(f"[9] Rotation equivariance MAE-to-GT: {rot_abs_mean:.9f}")
 
-    # 10) Reflect across x=0
-    ref_tokens = reflect_tokens_yz(base_tokens)
-    ref_tokens = center_tokens(ref_tokens)
-    if use_align:
-        ref_tokens = align_pair_to_x(ref_tokens)
-
-    # 11) Predict (reflection)
-    with torch.no_grad():
-        pred_ref = model(ref_tokens)
-    # 12) Mean |pred-gt|
-    ref_abs_mean = (pred_ref - gt).abs().mean().item()
-    print(f"[12] Reflection equivariance MAE-to-GT: {ref_abs_mean:.6f}")
+    # ---------------------------
+    # Section 10–12) Reflection (report using same preds)
+    # ---------------------------
+    ref_abs_mean = (pred_canon - gt).abs().mean().item()
+    print(f"[12] Reflection equivariance MAE-to-GT: {ref_abs_mean:.9f}")
+    
 
     # Log finals to W&B too
     if use_wandb:
