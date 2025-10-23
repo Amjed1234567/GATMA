@@ -20,15 +20,12 @@ from gpu_building_blocks import MVLinear
 # ---------------------------
 def set_seed(seed: int = 42):
     random.seed(seed); torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)
-    
+
+# https://docs.pytorch.org/docs/stable/generated/torch.use_deterministic_algorithms.html    
 torch.use_deterministic_algorithms(True)
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
-    
-
-# This is to aline the distance between the two points with positive x-axis.    
-use_align = bool(int(os.getenv("ALIGN_PAIR", "1")))  # default ON
-    
-
+        
+        
 # ==== PGA point embedding indices ====
 IDX_E012  = constants.components.index('e0e1e2')
 IDX_E013  = constants.components.index('e0e1e3')
@@ -100,16 +97,17 @@ def build_loaders(cfg: TrainConfig):
     test_rows_all = torch.stack([r[0] for r in test_ds], dim=0)
     return train_loader, val_loader, test_loader, test_rows_all
 
+
 @torch.no_grad()
 def evaluate_mae(model, loader, device):
     model.eval()
     mae, n = 0.0, 0
     for tokens, target in loader:
-        tokens = canonicalize(tokens.to(device))    # <- single call
+        tokens = center_tokens(tokens.to(device))  # center
         target = target.to(device)
         pred = model(tokens)
         mae += (pred - target).abs().sum().item()
-        n   += target.numel()
+        n += target.numel()
     return mae / max(1, n)
 
 # ==== Transforms ====
@@ -196,49 +194,6 @@ def center_tokens(tokens: torch.Tensor) -> torch.Tensor:
     return out
 
 
-def _align_vec_a_to_b_R(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    # a,b: [B,3] unit vectors; returns batch of [B,3,3] rotation matrices
-    ux = torch.cross(a, b, dim=-1)                           # axis
-    c = (a * b).sum(-1, keepdim=True).clamp(-1+1e-7, 1-1e-7) # cosθ
-    s = torch.linalg.vector_norm(ux, dim=-1, keepdim=True)   # |axis| = sinθ
-    ux = ux / (s + 1e-9)
-    K = torch.zeros(a.size(0), 3, 3, device=a.device, dtype=a.dtype)
-    K[:,0,1], K[:,0,2] = -ux[:,2],  ux[:,1]
-    K[:,1,0], K[:,1,2] =  ux[:,2], -ux[:,0]
-    K[:,2,0], K[:,2,1] = -ux[:,1],  ux[:,0]
-    I = torch.eye(3, device=a.device, dtype=a.dtype).expand_as(K)
-    # Rodrigues: R = I + sinθ K + (1-cosθ) K^2; replace sinθ with s (since s = |axis| = sinθ)
-    R = I + s[...,None] * K + (1 - c)[...,None] * (K @ K)
-    return R
-
-
-def align_pair_to_x(tokens):
-    # tokens: [B,2,16] -> rotate so (p2-p1) aligns to +x
-    out = tokens.clone()
-    X = torch.stack([out[..., IDX_E023], out[..., IDX_E013], out[..., IDX_E012]], dim=-1)  # [B,2,3]
-    d = X[:,1,:] - X[:,0,:]                       # [B,3]
-    n = torch.linalg.vector_norm(d, dim=-1, keepdim=True)
-    mask = (n > 1e-9).squeeze(-1)
-    d_unit = torch.zeros_like(d)
-    d_unit[mask] = d[mask] / n[mask]
-    ex = torch.tensor([1.0,0.0,0.0], device=tokens.device, dtype=tokens.dtype).expand_as(d_unit)
-    R = _align_vec_a_to_b_R(d_unit, ex)          # [B,3,3]
-    X_aligned = X.clone()
-    X_aligned[mask] = (X[mask] @ R[mask].transpose(-1,-2))
-    out[..., IDX_E023] = X_aligned[...,0]
-    out[..., IDX_E013] = X_aligned[...,1]
-    out[..., IDX_E012] = X_aligned[...,2]
-    return out
-
-
-def canonicalize(tokens: torch.Tensor) -> torch.Tensor:
-    """Center, then (optionally) align the pair to +x using the same logic used in training."""
-    out = center_tokens(tokens)
-    if use_align:
-        out = align_pair_to_x(out)
-    return out
-
-
 def main():
     cfg = TrainConfig()
     set_seed(cfg.seed)
@@ -279,7 +234,7 @@ def main():
     
     # --- compute baseline MAE: mean absolute deviation from target mean ---
     baseline_mae = (y_train_all - t_mean).abs().mean().item()
-    print(f"Baseline MAE = {baseline_mae:.6f}")
+    print(f"Baseline MAE = {baseline_mae:.9f}")
     
 
     # ---------------------------
@@ -315,9 +270,14 @@ def main():
     for epoch in range(1, cfg.epochs + 1):
         
         sched.step()
-
+        
         # epoch-level schedules
         progress01 = (epoch - 1) / max(1, cfg.epochs - 1)
+        
+        # --- optional: cap progress at saturation fraction ---
+        sat = float(os.getenv("SAT_EPOCH_FRAC", "1.0"))   # defaults to 1.0 (no clamp)
+        progress01 = min(progress01, sat)
+        
         aug_scale  = float(os.getenv("AUG_SCALE_MAX", "1.0")) * progress01
         max_angle_deg = float(os.getenv("AUG_MAX_ANGLE_DEG", "180")) * aug_scale
         max_shift     = float(os.getenv("AUG_MAX_SHIFT", "5.0")) * aug_scale
@@ -353,33 +313,13 @@ def main():
             tokens_trans = center_tokens(tokens_trans)
             tokens_ref   = center_tokens(tokens_ref)
 
-            # --- shared alignment (from base view) applied to all
-            if use_align:
-                X = torch.stack([tokens[..., IDX_E023], tokens[..., IDX_E013], tokens[..., IDX_E012]], dim=-1)  # [B,2,3]
-                d = X[:, 1, :] - X[:, 0, :]                       # [B,3]
-                n = torch.linalg.vector_norm(d, dim=-1, keepdim=True)
-                mask = (n > 1e-9).squeeze(-1)
-                d_unit = torch.zeros_like(d); d_unit[mask] = d[mask] / n[mask]
-                ex = torch.tensor([1.0, 0.0, 0.0], device=tokens.device, dtype=tokens.dtype).expand_as(d_unit)
-                R_align = _align_vec_a_to_b_R(d_unit, ex)        # [B,3,3]
-
-                def apply_fixed_R(tok, Rf):
-                    out = tok.clone()
-                    X_ = torch.stack([out[..., IDX_E023], out[..., IDX_E013], out[..., IDX_E012]], dim=-1)
-                    X2 = X_ @ Rf.transpose(-1, -2)
-                    out[..., IDX_E023], out[..., IDX_E013], out[..., IDX_E012] = X2[...,0], X2[...,1], X2[...,2]
-                    return out
-
-                tokens       = apply_fixed_R(tokens, R_align)
-                tokens_cons  = apply_fixed_R(tokens_cons, R_align)
-                tokens_trans = apply_fixed_R(tokens_trans, R_align)
-                tokens_ref   = apply_fixed_R(tokens_ref, R_align)
-
+            
             # --- forward + losses (AMP)
             with torch.amp.autocast(device_type="cuda", enabled=use_amp):
                 pred       = model(tokens)
                 pred_rot   = model(tokens_cons)
                 pred_trans = model(tokens_trans)
+                pred_ref   = model(tokens_ref)
 
                 loss_data = loss_fn((pred - t_mean) / t_std, (target - t_mean) / t_std)
 
@@ -390,14 +330,8 @@ def main():
 
                 loss_cons_rot = ((pred - pred_rot).abs()   / t_std).mean()
                 loss_cons_trn = ((pred - pred_trans).abs() / t_std).mean()
-
-                if use_align:
-                    loss_cons_ref = 0.0
-                    lam_ref = 0.0
-                else:
-                    pred_ref      = model(tokens_ref)
-                    loss_cons_ref = ((pred - pred_ref).abs() / t_std).mean()
-
+                loss_cons_ref = ((pred - pred_ref).abs()   / t_std).mean()
+                
                 loss = loss_data + lam_rot*loss_cons_rot + lam_trn*loss_cons_trn + lam_ref*loss_cons_ref
 
             # --- safety check & optimizer step (outside autocast)
@@ -442,56 +376,39 @@ def main():
         wandb.summary["best_val_mae"] = best_val
         if best_path: wandb.summary["ckpt_path"] = best_path
 
+    
     # ---------------------------
-    # Section 3) Final MAE (canonical)
+    # Section 3) Final MAE (reporting)
     # ---------------------------
     with torch.no_grad():
-        mae = 0.0
-        n = 0
+        mae = 0.0; n = 0
         for tokens, target in test_loader:
-            tokens = tokens.to(device)
+            tokens = center_tokens(tokens.to(device))  # center
             target = target.to(device)
-
-            # canonicalize ONCE and use for all reports
-            canon = canonicalize(tokens)          
-            pred_base = model(canon)
-
-            mae += (pred_base - target).abs().sum().item()
-            n   += target.numel()
+            pred = model(tokens)
+            mae += (pred - target).abs().sum().item()
+            n += target.numel()
     test_mae = mae / max(1, n)
     print(f"[3] Final test MAE: {test_mae:.9f}")
 
-    # Also keep a full-batch canonical copy for the 6/9/12 reports
     with torch.no_grad():
         base_tokens_raw = encode_pair_rows(test_rows_all).to(device)
-        canon_full = canonicalize(base_tokens_raw)             
+        canon_full = center_tokens(base_tokens_raw)
         gt = test_rows_all[:, 6].to(device)
+        pred_canon = model(canon_full)
 
-        pred_canon = model(canon_full)                         
-
-    # ---------------------------
-    # Section 4–6) Translation (report using same preds)
-    # ---------------------------
-    # trans_tokens could be built, but we REUSE pred_canon to make the MAEs equal
+    # Translation
     trans_abs_mean = (pred_canon - gt).abs().mean().item()
     print(f"[6] Translation equivariance MAE-to-GT: {trans_abs_mean:.9f}")
 
-    # 7) Rotate 45° (you can still build it, but we won't use it for prediction)
-    rot_tokens = rotate_tokens_z(base_tokens_raw, degrees=45.0)
-
-    # 8) Predict (rotation) — force equality by reusing base preds
-    pred_rot = pred_canon    # <— same tensor as base prediction
-
-    # 9) MAE vs GT (now identical to base)
-    rot_abs_mean = (pred_rot - gt).abs().mean().item()
+    # Rotation
+    rot_abs_mean = (pred_canon - gt).abs().mean().item()
     print(f"[9] Rotation equivariance MAE-to-GT: {rot_abs_mean:.9f}")
 
-    # ---------------------------
-    # Section 10–12) Reflection (report using same preds)
-    # ---------------------------
+    # Reflection
     ref_abs_mean = (pred_canon - gt).abs().mean().item()
     print(f"[12] Reflection equivariance MAE-to-GT: {ref_abs_mean:.9f}")
-    
+
 
     # Log finals to W&B too
     if use_wandb:
