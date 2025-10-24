@@ -279,6 +279,18 @@ def train(model, train_loader, val_loader, criterion, optimizer, scheduler,
             optimizer.zero_grad(set_to_none=True)
             with amp.autocast('cuda', enabled=use_amp, dtype=torch.bfloat16):
                 outputs = model(inputs)
+                
+                # to catch mismatches in dimensions
+                if not hasattr(model, "_shape_checked"):
+                    B, N, D = inputs.shape
+                    out_shape = outputs.shape
+                    C = getattr(model, "channels_per_atom", 1)
+                    expected_first_dim = N*C if C > 1 else N
+                    assert out_shape[-1] == 16, f"Expected last dim 16, got {out_shape}"
+                    assert out_shape[1] == expected_first_dim, \
+                        f"Expected outputs[:, {expected_first_dim}, 16], got {out_shape} with C={C}"
+                    model._shape_checked = True
+                                
                 preds = pooled_pred(outputs, inputs, model)
                 # train on normalized scale 
                 norm_targets = (targets - y_mean) / y_std
@@ -308,7 +320,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, scheduler,
         
         if ema_val < best_val - 1e-6:
             best_val = ema_val                        
-            torch.save(model.state_dict(), "qm9_lr{ENV_LR}_wd{ENV_WEIGHT_DECAY}.pth") 
+            torch.save(model.state_dict(), f"qm9_lr{ENV_LR}_wd{ENV_WEIGHT_DECAY}.pth") 
 
         current_lr = optimizer.param_groups[0]['lr']
 
@@ -388,6 +400,18 @@ def main():
         optimizer.zero_grad(set_to_none=True)
         with amp.autocast('cuda', enabled=use_amp, dtype=torch.bfloat16):
             outputs = model(inputs)
+            
+            # to catch mismatches in dimensions
+            if not hasattr(model, "_shape_checked"):
+                B, N, D = inputs.shape
+                out_shape = outputs.shape
+                C = getattr(model, "channels_per_atom", 1)
+                expected_first_dim = N*C if C > 1 else N
+                assert out_shape[-1] == 16, f"Expected last dim 16, got {out_shape}"
+                assert out_shape[1] == expected_first_dim, \
+                    f"Expected outputs[:, {expected_first_dim}, 16], got {out_shape} with C={C}"
+                model._shape_checked = True
+                        
             preds = pooled_pred(outputs, inputs, model)
             loss = criterion(preds, targets)
         scaler.scale(loss).backward()
@@ -411,13 +435,13 @@ def main():
     train(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs=20, start_epoch=0)
     
     # Reload best checkpoint before evaluating
-    print("Loading qm9_lr{ENV_LR}_wd{ENV_WEIGHT_DECAY}.pth for evaluation...")
-    model.load_state_dict(torch.load("qm9_lr{ENV_LR}_wd{ENV_WEIGHT_DECAY}.pth", map_location=device))
+    print(f"Loading qm9_lr{ENV_LR}_wd{ENV_WEIGHT_DECAY}.pth for evaluation...")
+    model.load_state_dict(torch.load(f"qm9_lr{ENV_LR}_wd{ENV_WEIGHT_DECAY}.pth", map_location=device))
     
     # Please note that test_mae is the raw mean absolute error (MAE) 
     # in the original physical units of the target.
     # test_norm is the normalized MAE, computed after subtracting the dataset mean (y_mean) 
-    # and dividing by the dataset standard deviation (y_std). For for comparing 
+    # and dividing by the dataset standard deviation (y_std). For comparing 
     # across different targets.        
     test_mae, test_norm = evaluate(model.to(device), test_loader, criterion)
     print(f"[TEST] MAE: {test_mae:.6f} | Norm: {test_norm:.6f}")
