@@ -1,3 +1,7 @@
+# Author: Amjed Farooq Afzal.
+# With inspiration from:  https://github.com/qualcomm-ai-research/geometric-algebra-transformer
+
+
 import math
 import torch
 import torch.nn as nn
@@ -91,8 +95,8 @@ class MVLayerNorm(nn.Module):
     def __init__(self, eps=1e-5, mode: str = "mask"):
         """
         mode:
-          - "mask": ℝ⁸ dot over non-e0 blades (paper's description)
-          - "signed": invariant PGA inner product with grade signs (indefinite), |·| before sqrt
+          - "mask": dot over non-e0 blades (GATr paper's description)
+          - "signed": invariant PGA inner product with grade signs, before sqrt
         """
         super().__init__()
         self.eps  = eps
@@ -157,7 +161,7 @@ class MVAttentionHead(nn.Module):
         wanted_dtype = x.dtype
         q = q.to(wanted_dtype); k = k.to(wanted_dtype); v = v.to(wanted_dtype)
 
-        # --- invariant inner product <q,k> with grade signs ---
+        # --- invariant inner product q*k with grade signs ---
         q_signed = q * self.metric_signs                 # [B,N,16]
         attn_logits = torch.bmm(q_signed, k.transpose(1, 2))  # [B,N,N]
         # -----------------------------------------------------------
@@ -168,21 +172,29 @@ class MVAttentionHead(nn.Module):
         # distance-aware term 
         comps = constants.components
         ix, iy, iz = comps.index('e0e1e2'), comps.index('e0e1e3'), comps.index('e0e2e3')
+        # 3D position vector
         R = torch.stack([x[..., ix], x[..., iy], x[..., iz]], dim=-1).to(wanted_dtype)  # [B,N,3]
+        # Compute squared norms (column vector per token)
         r2 = (R * R).sum(dim=-1, keepdim=True)
-        attn_logits.add_(-self.gamma * r2)
-        attn_logits.add_(-self.gamma * r2.transpose(1, 2))
+        # Subtract these norms on rows and columns of the logits
+        attn_logits.add_(-self.gamma * r2) # subtract on rows
+        attn_logits.add_(-self.gamma * r2.transpose(1, 2)) # subtract on columns
+        # Add a scaled Gram matrix
         g = torch.sqrt(torch.clamp(2.0 * self.gamma, min=0.0)).to(R.dtype)
         attn_logits = torch.baddbmm(attn_logits, R * g, (R * g).transpose(1, 2), beta=1.0, alpha=1.0)
 
+        # Detect which tokens are “real”
         key_mask = (x.abs().sum(dim=-1) > 0)
+        # Choose a masking value depending on precision
         mask_val = -1e4 if attn_logits.dtype == torch.float16 else -1e9
+        # Apply the mask
         attn_logits = attn_logits.masked_fill(~key_mask.unsqueeze(1), mask_val)
+        # Clamp for numerical stability
         attn_logits = torch.clamp(attn_logits, min=-1e4, max=1e4)
 
         # numerically stable softmax: subtract max, compute in float32, cast back
         max_per_row = attn_logits.max(dim=-1, keepdim=True).values
-        attn_logits = attn_logits - max_per_row
+        attn_logits = attn_logits - max_per_row # Subtract the per-row maximum
         attn_weights = F.softmax(attn_logits, dim=-1, dtype=torch.float32).to(attn_logits.dtype)
 
         return torch.bmm(attn_weights, v)
@@ -203,11 +215,8 @@ class MVMultiHeadAttention(nn.Module):
         return y
 
 
-# --- Add toggles at top of file (temporary debug flags) ---
-DEBUG_DISABLE_JOIN = False
-DEBUG_DISABLE_GP   = False
-# ----------------------------------------------------------
 
+# This is the bilinear layer.
 class MVGeometricBilinear(nn.Module):
     def __init__(self):
         super().__init__()
@@ -220,24 +229,15 @@ class MVGeometricBilinear(nn.Module):
         Returns:
             torch.Tensor: Concatenation of geometric product and E(3)-equivariant join. 
             Shape: (batch_size, num_tokens, 2*len(constants.components))
-        """        
-        gp = geometric_product_batch(x, y) if not DEBUG_DISABLE_GP else torch.zeros_like(x)
-        join = equi_join_batch(x, y, reference) if not DEBUG_DISABLE_JOIN else torch.zeros_like(x)
-        
-        return torch.cat([gp, join], dim=-1)
-"""
-# This is the bilinear layer.
-class MVGeometricBilinear(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, x, y, reference):
+        """                
         
         gp = geometric_product_batch(x, y)           
         join = equi_join_batch(x, y, reference)      
 
         return torch.cat([gp, join], dim=-1)         
-"""    
+
+
+
     
 # Putting the layers together to form a block. 
 class MVFeedforwardBlock(nn.Module):    
