@@ -389,6 +389,11 @@ def main():
     scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2, min_lr=1e-6)
 
 
+    print("[milestone] Starting QM9 load...", flush=True)
+    # build dataset / loaders
+    print("[milestone] Dataset ready. N_train,N_val,N_test=", len(train_set), len(val_set), len(test_set), flush=True)
+    print("[milestone] Model built; entering sanity epoch...", flush=True)
+
     # >>> QUICK 1 EPOCH SANITY RUN WITH TIMING (TEMPORARY) <<<
     import time
     print("\n[Sanity check] Running 1 quick epoch for timing...")
