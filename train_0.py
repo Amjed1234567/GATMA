@@ -386,7 +386,8 @@ def main():
     # Loss & optimizer & scaler
     criterion = nn.L1Loss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=ENV_LR, weight_decay=ENV_WEIGHT_DECAY)
-    scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-6)
+    scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2, min_lr=1e-6)
+
 
     # >>> QUICK 1 EPOCH SANITY RUN WITH TIMING (TEMPORARY) <<<
     import time
@@ -433,7 +434,7 @@ def main():
     # >>> END PROBE BLOCK <<<
 
     # Train, then test
-    train(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs=20, start_epoch=0)
+    train(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs=10, start_epoch=0)
     
     # Reload best checkpoint before evaluating
     print(f"Loading qm9_lr{ENV_LR}_wd{ENV_WEIGHT_DECAY}.pth for evaluation...")
