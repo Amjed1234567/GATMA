@@ -1,3 +1,5 @@
+# Author: Amjed Farooq Afzal
+
 import torch
 import math
 import constants  

@@ -1,3 +1,7 @@
+# Author: Amjed Farooq Afzal.
+# With inspiration from:  https://github.com/qualcomm-ai-research/geometric-algebra-transformer
+
+
 import torch
 import torch.nn as nn
 from gpu_building_blocks import (
@@ -70,17 +74,3 @@ class MVTransformer(nn.Module):
         for layer in self.layers:
             x = layer(x)
         return x
-"""
-# -------------------------
-# Run file directly: quick shape check
-# -------------------------
-if __name__ == "__main__":
-    mvt = MVTransformer(num_layers=3, num_heads=2, channels_per_atom=3)
-    print(mvt)
-
-    B, N = 2, 5
-    x = torch.randn(B, N, 16)
-    y = mvt(x)
-    print("in :", x.shape)
-    print("out:", y.shape)  # expect [2, 5*3, 16]
-"""

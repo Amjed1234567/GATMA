@@ -1,3 +1,4 @@
+# Author: Amjed Farooq Afzal. 
 # This file contains the batch versions of geometric product,
 # outer product, dual and join. If you need the simpler versions for 
 # just one multivector, please see file multivector.py.
