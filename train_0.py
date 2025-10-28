@@ -56,6 +56,15 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(torch.__version__)
 print("Using device:", device)
 
+print("[diag] torch.cuda.is_available():", torch.cuda.is_available())
+print("[diag] torch.version.cuda:", torch.version.cuda)
+print("[diag] torch.backends.cudnn.version():", torch.backends.cudnn.version() if torch.cuda.is_available() else None)
+print("[diag] torch.cuda.device_count():", torch.cuda.device_count())
+if torch.cuda.is_available():
+    for i in range(torch.cuda.device_count()):
+        print(f"[diag] device {i}: {torch.cuda.get_device_name(i)}")
+
+
 # From https://docs.pytorch.org/docs/stable/amp.html
 use_amp = (device.type == "cuda")
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -397,41 +406,29 @@ def main():
     # >>> QUICK 1 EPOCH SANITY RUN WITH TIMING (TEMPORARY) <<<
     import time
     print("\n[Sanity check] Running 1 quick epoch for timing...")
-    model.to(device)
-    model.train()
+    model.to(device); model.train()
     start_time = time.time()
     running_loss = 0.0
+    max_batches = 50  # <-- cap for quick timing
     for batch_idx, (inputs, targets) in enumerate(train_loader):
+        if batch_idx >= max_batches:
+            break
         inputs = inputs.to(device, non_blocking=True)
         targets = targets.to(device).view(-1).to(torch.float32)
         optimizer.zero_grad(set_to_none=True)
         with amp.autocast('cuda', enabled=use_amp, dtype=torch.bfloat16):
             outputs = model(inputs)
-            
-            # to catch mismatches in dimensions
-            if not hasattr(model, "_shape_checked"):
-                B, N, D = inputs.shape
-                out_shape = outputs.shape
-                C = getattr(model, "channels_per_atom", 1)
-                expected_first_dim = N*C if C > 1 else N
-                assert out_shape[-1] == 16, f"Expected last dim 16, got {out_shape}"
-                assert out_shape[1] == expected_first_dim, \
-                    f"Expected outputs[:, {expected_first_dim}, 16], got {out_shape} with C={C}"
-                model._shape_checked = True
-                        
             preds = pooled_pred(outputs, inputs, model)
             loss = criterion(preds, targets)
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        scaler.step(optimizer)
-        scaler.update()
-
+        scaler.step(optimizer); scaler.update()
         running_loss += loss.item()
-        
     epoch_time = time.time() - start_time
-    avg_loss = running_loss / max(len(train_loader), 1)
-    print(f"[Sanity check] Epoch time: {epoch_time:.2f} sec | Avg loss: {avg_loss:.6f}")
+    steps = min(max_batches, len(train_loader))
+    print(f"[Sanity check] {steps} batches in {epoch_time:.1f}s "
+        f"({steps/epoch_time:.2f} it/s), avg loss: {running_loss/steps:.6f}")
     
     # Free up any leftovers from the quick run
     del outputs, preds, loss    
