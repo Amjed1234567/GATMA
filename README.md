@@ -33,7 +33,7 @@ class MVGeometricBilinear, and class MVFeedforwardBlock. These are the building 
 This file contains the Transformer build using the building blocks from the file gpu_building_blocks.
 
 ### multivector.py
-An instance of this class is a multivector. You will find methods that are used on multivector objects:
+An instance of this class is a multivector. You will find methods that are used on multivector objects:\
 to_string\
 geometric_product\
 add\
