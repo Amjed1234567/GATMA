@@ -50,7 +50,7 @@ inverse\
 normalize\
 rotate\
 translate\
-reflect\
+reflect
 
 ### Other files
 All files with prefix train are used for training. The file train_points_distance.py is used to train on the artificial data set.
