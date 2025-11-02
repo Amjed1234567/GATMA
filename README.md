@@ -50,7 +50,12 @@ inverse\
 normalize\
 rotate\
 translate\
-reflect
+reflect\
+
+### Other files
+All files with prefix train are used for training. The file train_points_distance.py is used to train on the artificial data set.
+The other train files are for training on QM9 data. 
+The files in the directory named precompute are used to calculate the Cayley table in file constants.py.
 
 ## 3. How to use this code
 
