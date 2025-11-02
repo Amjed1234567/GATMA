@@ -34,22 +34,22 @@ This file contains the Transformer build using the building blocks from the file
 
 ### multivector.py
 An instance of this class is a multivector. You will find methods that are used on multivector objects:
-to_string
-geometric_product
-add
-subtract
-outer_product
-multiply_with_scalar
-blade_projection
-dual
-join
-equi_join
-reverse
-inner_product
-inverse
-normalize
-rotate
-translate
+to_string\
+geometric_product\
+add\
+subtract\
+outer_product\
+multiply_with_scalar\
+blade_projection\
+dual\
+join\
+equi_join\
+reverse\
+inner_product\
+inverse\
+normalize\
+rotate\
+translate\
 reflect
 
 ## 3. How to use this code
