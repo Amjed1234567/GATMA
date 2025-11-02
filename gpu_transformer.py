@@ -48,7 +48,7 @@ class MVTokenExpander(nn.Module):
         super().__init__()
         assert channels >= 1
         self.channels = channels
-        # Single MVLinear expands 1 → channels
+        # Single MVLinear expands 1 -> channels
         self.proj = MVLinear(in_channels=1, out_channels=channels)
 
     def forward(self, x):  # x: [B, N, 16]

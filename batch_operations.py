@@ -6,7 +6,7 @@
 import torch
 import constants
 from multivector import Multivector
-from constants import components, product_table  # blades + symbolic products  :contentReference[oaicite:0]{index=0}
+from constants import components, product_table  
 
 # Build the 16×16×16 geometric product tensor from the symbolic table once.
 def _build_geometric_product_tensor():
@@ -39,7 +39,7 @@ def _build_geometric_product_tensor():
 
     return G
 
-# Base (CPU/float32) table; we’ll cast/copy per device/dtype as needed at runtime.
+# Base (CPU/float32) table; we will cast/copy per device/dtype as needed at runtime.
 G_BASE = _build_geometric_product_tensor()
 
 # Small cache so we don’t re-to() every batch
@@ -195,14 +195,7 @@ def join_batch(x, y):
     Returns:
         Join(x, y): tensor of shape (batch_size, num_tokens, len(constants.components))
     """
-    #x = x.to(DUAL_MATRIX.device)
-    #y = y.to(DUAL_MATRIX.device)
     
-    #x_dual = dual_batch(x)
-    #y_dual = dual_batch(y)
-    #outer = outer_product_batch(x_dual, y_dual)
-        
-    #return dual_batch(outer)
     return dual_batch(outer_product_batch(dual_batch(x), dual_batch(y)))
 
 

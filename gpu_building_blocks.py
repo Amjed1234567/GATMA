@@ -101,7 +101,7 @@ class MVLayerNorm(nn.Module):
         super().__init__()
         self.eps  = eps
         self.mode = mode
-        # non-e0 mask (ℝ⁸)
+        # non-e0 mask
         self.register_buffer("non_e0_mask", constants.non_e0_mask)  # [1,1,16]
         # signed metric (+1 for 1,e1,e2,e3,e1e2e3; -1 for e1e2,e1e3,e2e3; 0 for any e0 blade)
         metric = torch.tensor(
@@ -179,7 +179,7 @@ class MVAttentionHead(nn.Module):
         # Subtract these norms on rows and columns of the logits
         attn_logits.add_(-self.gamma * r2) # subtract on rows
         attn_logits.add_(-self.gamma * r2.transpose(1, 2)) # subtract on columns
-        # Add a scaled Gram matrix
+        # Add a scaled matrix
         g = torch.sqrt(torch.clamp(2.0 * self.gamma, min=0.0)).to(R.dtype)
         attn_logits = torch.baddbmm(attn_logits, R * g, (R * g).transpose(1, 2), beta=1.0, alpha=1.0)
 
