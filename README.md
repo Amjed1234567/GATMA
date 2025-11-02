@@ -10,14 +10,7 @@ If you just want to understand the code, start by looking at the files multivect
 The next step is batch_operations.py that contains the batch versions of what you find in multivector.py.
 Finally, you can look at gpu_building_blocks.py and gpu_transformer.py. 
 
-
-## 2. How to use this code
-
-Just clone the repository. Make sure that you have a virtual environment installed.
-The file train_0.py is used for training. To resume training with more epochs, you can use train_more.py. 
-If you are using a university computer, you may need to create a .sh file. You will need a GPU to run this code. 
-
-## 3. A short description of the files
+## 2. A short description of the files
 
 ### artificial_data.py 
 This file is used to create an artificial data set consisting of random pairs of 3D points and their Euclidean distance.
@@ -58,6 +51,12 @@ normalize
 rotate
 translate
 reflect
+
+## 3. How to use this code
+
+Just clone the repository. Make sure that you have a virtual environment installed.
+The file train_0.py is used for training. To resume training with more epochs, you can use train_more.py. 
+If you are using a university computer, you may need to create a .sh file. You will need a GPU to run this code. 
 
 ## 4. Citations
  
